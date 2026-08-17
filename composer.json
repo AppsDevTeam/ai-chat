@@ -1,0 +1,33 @@
+{
+  "name": "adt/ai-chat",
+  "description": "AI chat over your database: an Anthropic Managed Agents conversation engine with safe read-only SQL tools over anonymized views",
+  "type": "library",
+  "license": "MIT",
+  "keywords": ["ai", "chat", "llm", "anthropic", "claude", "agents", "doctrine"],
+  "authors": [
+    {
+      "name": "Apps Dev Team",
+      "email": "hello@appsdevteam.com"
+    }
+  ],
+  "minimum-stability": "stable",
+  "require": {
+    "php": ">=8.1",
+    "adt/doctrine-anonymization": "^0.2",
+    "doctrine/orm": "^2.14 || ^3.0"
+  },
+  "require-dev": {
+    "codeception/codeception": "^5.0",
+    "codeception/module-asserts": "^3.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "ADT\\AiChat\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "classmap": [
+      "tests/"
+    ]
+  }
+}
