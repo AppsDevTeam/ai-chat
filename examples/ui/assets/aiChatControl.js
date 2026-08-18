@@ -127,7 +127,7 @@
 			this.container.on('click', '.ai-chat__conversation-delete', function(e) {
 				e.stopPropagation();
 				var id = $(this).data('id');
-				if (confirm($(this).attr('title') + '?')) {
+				if (confirm(self.container.data('delete-confirm') || 'Delete?')) {
 					self.deleteConversation(id);
 				}
 			});
@@ -455,7 +455,8 @@
 				var activeClass = conv.id === this.activeConversationId ? ' ai-chat__conversation-item--active' : '';
 				var deleteBtn = this.readOnly
 					? ''
-					: '<button type="button" class="ai-chat__conversation-delete" data-id="' + conv.id + '" title="Delete">'
+					: '<button type="button" class="ai-chat__conversation-delete" data-id="' + conv.id + '" title="'
+					+ this.escapeHtml(this.container.data('delete-label') || 'Delete') + '">'
 						+ '<i class="fa fa-trash"></i></button>';
 				var html = '<div class="ai-chat__conversation-item' + activeClass + '" data-id="' + conv.id + '">'
 					+ '<div class="ai-chat__conversation-title">' + this.escapeHtml(conv.title) + '</div>'
