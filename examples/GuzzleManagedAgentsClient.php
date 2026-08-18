@@ -101,14 +101,19 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 
 	public function uploadFile(string $filename, string $contents, string $mediaType): array
 	{
+		// A dedicated client WITHOUT the default Content-Type: application/json -
+		// it would override the multipart boundary and the API would not find the
+		// "file" field. Guzzle then sets multipart/form-data; boundary=... itself.
+		$client = new Client([
+			'headers' => [
+				'x-api-key' => $this->apiKey,
+				'anthropic-version' => $this->anthropicVersion,
+				'anthropic-beta' => 'files-api-2025-04-14,' . self::MANAGED_AGENTS_BETA,
+			],
+		]);
+
 		try {
-			$response = $this->getClient()->request('POST', rtrim($this->baseUrl, '/') . '/files', [
-				'headers' => [
-					// Files API + Managed Agents betas; the multipart body must set its
-					// own Content-Type, so the client default (application/json) is unset.
-					'anthropic-beta' => 'files-api-2025-04-14,' . self::MANAGED_AGENTS_BETA,
-					'Content-Type' => null,
-				],
+			$response = $client->request('POST', rtrim($this->baseUrl, '/') . '/files', [
 				'multipart' => [[
 					'name' => 'file',
 					'contents' => $contents,
