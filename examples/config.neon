@@ -1,0 +1,38 @@
+# Complete Nette DI wiring of the chat engine. Symfony users: the same services,
+# just registered in services.yaml.
+
+services:
+	# 1. Transport - your implementation of ManagedAgentsClient (see
+	#    GuzzleManagedAgentsClient.php for a reference one).
+	- App\AiChat\GuzzleManagedAgentsClient(
+		apiKey: %env.ANTHROPIC_API_KEY%
+		model: claude-sonnet-4-6
+	)
+
+	# 2. Read-only access to the anonymized schema (adt/doctrine-anonymization).
+	#    The user MUST be a dedicated account with SELECT on the anon schema only.
+	- ADT\DoctrineAnonymization\AnonymizationPolicy
+	- ADT\DoctrineAnonymization\SchemaDescriber
+	- ADT\DoctrineAnonymization\PersonalDataColumns
+	- ADT\DoctrineAnonymization\AnonymizedViewsGenerator
+	- ADT\DoctrineAnonymization\ReadOnlyConnectionOptions(
+		user: %env.DB_ANON_USER%
+		password: %env.DB_ANON_PASSWORD%
+	)
+	- ADT\DoctrineAnonymization\ReadOnlyQueryExecutor
+
+	# 3. The engine.
+	- ADT\AiChat\ToolHandler
+	- ADT\AiChat\PiiValueCollector
+	- ADT\AiChat\PiiResponseFilter          # pass labels for a localized chat
+	- ADT\AiChat\SystemPromptBuilder(
+		templatePath: %appDir%/ai-chat/system-prompt.md   # copy the default from the package
+	)
+	- ADT\AiChat\AgentProvisioner(
+		agentClass: App\AiChat\Entity\Agent
+		namePrefix: myapp-aichat
+	)
+
+	# 4. Your glue: the hand-off to a queue and the coordinator.
+	- App\AiChat\QueueMessageDispatcher
+	- App\AiChat\ChatService

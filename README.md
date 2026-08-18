@@ -24,6 +24,23 @@ ToolHandler (SQL / charts / export) ◄──────┘
 ReadOnlyQueryExecutor (adt/doctrine-anonymization, read-only account, anon schema)
 ```
 
+## Complete working example
+
+The [`examples/`](examples) directory is a full reference integration you can copy
+into a project and adjust:
+
+| File | Shows |
+|---|---|
+| `GuzzleManagedAgentsClient.php` | the transport - raw HTTP with the beta header, over Guzzle |
+| `Entity/Conversation.php`, `Entity/Agent.php` | entities built from the package traits, ownership on your side |
+| `Entity/Message.php` | a minimal transcript entity (the package has no message contract on purpose) |
+| `ChatService.php` | the coordinator - web request stores + dispatches, worker runs the turn, redacts and persists |
+| `QueueMessageDispatcher.php` | the background hand-off (here adt/background-queue) incl. the consumer wiring |
+| `config.neon` | complete DI registration of everything above |
+
+The examples are not autoloaded by the package - they are a starting point, not an
+API.
+
 ## Wiring
 
 ### 1. Implement the transport
