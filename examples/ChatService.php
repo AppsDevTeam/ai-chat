@@ -47,6 +47,105 @@ class ChatService
 	) {
 	}
 
+	// -- Conversation CRUD the UI control needs -------------------------------
+
+	public function createConversation(int $userId): Conversation
+	{
+		$conversation = new Conversation($userId);
+		$this->em->persist($conversation);
+		$this->em->flush();
+
+		return $conversation;
+	}
+
+	/**
+	 * @return list<Conversation>
+	 */
+	public function getConversations(int $userId): array
+	{
+		return $this->em->getRepository(Conversation::class)->findBy(
+			['userId' => $userId, 'deleted' => false],
+			['updated' => 'DESC'],
+		);
+	}
+
+	/** Ownership is enforced here - a foreign conversation reads as "not found". */
+	public function getConversation(int $conversationId, int $userId): ?Conversation
+	{
+		$conversation = $this->em->find(Conversation::class, $conversationId);
+
+		if ($conversation === null || $conversation->isDeleted() || $conversation->userId !== $userId) {
+			return null;
+		}
+
+		return $conversation;
+	}
+
+	/**
+	 * @return list<Message>
+	 */
+	public function getMessages(Conversation $conversation): array
+	{
+		return $this->em->getRepository(Message::class)->findBy(
+			['conversation' => $conversation],
+			['created' => 'ASC', 'id' => 'ASC'],
+		);
+	}
+
+	/**
+	 * Messages newer than $afterId - the frontend polls with the id of the message
+	 * it just sent and stops once the AI reply (or an error message) arrives.
+	 *
+	 * @return list<Message>
+	 */
+	public function getMessagesAfter(Conversation $conversation, int $afterId): array
+	{
+		return $this->em->getRepository(Message::class)->createQueryBuilder('m')
+			->where('m.conversation = :conversation')
+			->andWhere('m.id > :afterId')
+			->setParameter('conversation', $conversation)
+			->setParameter('afterId', $afterId)
+			->orderBy('m.id', 'ASC')
+			->getQuery()
+			->getResult();
+	}
+
+	public function deleteConversation(Conversation $conversation): void
+	{
+		$conversation->setDeleted(true);
+		$this->em->flush();
+	}
+
+	/**
+	 * Context-window usage estimate for the UI gauge. Managed Agents resends the
+	 * whole session context on every turn, so the tokensInput of the latest AI
+	 * message approximates the current window usage.
+	 *
+	 * @return array{used: int, window: int, percent: int}
+	 */
+	public function getContextUsage(Conversation $conversation, int $window = 200000): array
+	{
+		$row = $this->em->getRepository(Message::class)->createQueryBuilder('m')
+			->select('m.tokensInput')
+			->where('m.conversation = :conversation')
+			->andWhere('m.tokensInput IS NOT NULL')
+			->setParameter('conversation', $conversation)
+			->orderBy('m.id', 'DESC')
+			->setMaxResults(1)
+			->getQuery()
+			->getOneOrNullResult();
+
+		$used = (int) ($row['tokensInput'] ?? 0);
+
+		return [
+			'used' => $used,
+			'window' => $window,
+			'percent' => $window > 0 ? min(100, (int) round($used / $window * 100)) : 0,
+		];
+	}
+
+	// -- The message flow ------------------------------------------------------
+
 	/**
 	 * Web request part: cheap and fast. Add your own rate limiting here.
 	 */

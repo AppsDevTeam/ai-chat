@@ -36,3 +36,6 @@ services:
 	# 4. Your glue: the hand-off to a queue and the coordinator.
 	- App\AiChat\QueueMessageDispatcher
 	- App\AiChat\ChatService
+
+	# 5. The UI (see examples/ui/) - a generated factory for the chat control.
+	- App\AiChat\Ui\IChatControlFactory

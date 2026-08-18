@@ -37,6 +37,9 @@ into a project and adjust:
 | `ChatService.php` | the coordinator - web request stores + dispatches, worker runs the turn, redacts and persists |
 | `QueueMessageDispatcher.php` | the background hand-off (here adt/background-queue) incl. the consumer wiring |
 | `config.neon` | complete DI registration of everything above |
+| `ui/ChatControl.php` + `.latte` | the frontend as a Nette component: AJAX signals, polling, CSV download endpoint, tool-data whitelisting |
+| `ui/ChatPresenter.php` + `.latte` | a page hosting the control incl. the CDN includes (Chart.js, marked, DOMPurify) |
+| `ui/assets/aiChatControl.js`, `ui/assets/ai-chat.css` | the complete browser side: conversations, markdown rendering, charts, tables, context gauge, CSV buttons |
 
 The examples are not autoloaded by the package - they are a starting point, not an
 API.

@@ -1,0 +1,90 @@
+{* The ids, classes and data-* attributes are the contract of assets/aiChatControl.js
+   - keep them when adjusting the markup. Strings are inline here; wire them to your
+   translator if the project is localized. *}
+<div class="ai-chat" id="ai-chat"
+	data-send-url="{link sendMessage!}"
+	data-poll-url="{link pollReply!}"
+	data-load-url="{link loadConversation!}"
+	data-new-url="{link newConversation!}"
+	data-delete-url="{link deleteConversation!}"
+	data-conversations-url="{link getConversations!}"
+	data-export-url="{link downloadExport!}"
+	data-export-csv-label="Download CSV"
+>
+	<div class="ai-chat__sidebar">
+		<div class="ai-chat__sidebar-header">
+			<button type="button" class="btn btn-primary btn-sm ai-chat__new-btn" id="ai-chat-new-btn">
+				<i class="fa fa-plus"></i> New conversation
+			</button>
+		</div>
+		<div class="ai-chat__conversation-list" id="ai-chat-conversation-list">
+			{foreach $conversations as $conv}
+				<div class="ai-chat__conversation-item" data-id="{$conv->getId()}">
+					<div class="ai-chat__conversation-title">
+						{if $conv->getTitle() !== ''}{$conv->getTitle()}{else}New conversation{/if}
+					</div>
+					<div class="ai-chat__conversation-date">
+						{$conv->getUpdated()|date:'j.n.Y H:i'}
+					</div>
+					<button type="button" class="ai-chat__conversation-delete" data-id="{$conv->getId()}" title="Delete">
+						<i class="fa fa-trash"></i>
+					</button>
+				</div>
+			{/foreach}
+			{if count($conversations) === 0}
+				<div class="ai-chat__no-conversations" id="ai-chat-no-conversations">
+					No conversations yet.
+				</div>
+			{/if}
+		</div>
+	</div>
+
+	<div class="ai-chat__main">
+		<div class="ai-chat__header" id="ai-chat-header">
+			<h3 class="ai-chat__title" id="ai-chat-title">AI Assistant</h3>
+			<div class="ai-chat__context" id="ai-chat-context" style="display: none;"
+				data-label="Conversation context"
+				data-state-ok="I remember the whole conversation."
+				data-state-warn="The conversation is getting long - I will start forgetting the beginning soon."
+				data-state-full="Memory is almost full, consider starting a new conversation."
+			>
+				<div class="ai-chat__context-info">
+					<span class="ai-chat__context-text" id="ai-chat-context-text"></span>
+					<span class="ai-chat__context-percent" id="ai-chat-context-percent"></span>
+				</div>
+				<div class="ai-chat__context-bar">
+					<div class="ai-chat__context-fill" id="ai-chat-context-fill"></div>
+				</div>
+				<button type="button" class="ai-chat__context-new" id="ai-chat-context-new" style="display: none;">
+					<i class="fa fa-plus"></i> New conversation
+				</button>
+			</div>
+		</div>
+
+		<div class="ai-chat__messages" id="ai-chat-messages">
+			<div class="ai-chat__welcome" id="ai-chat-welcome">
+				<div class="ai-chat__welcome-icon">
+					<i class="fa fa-comments fa-3x"></i>
+				</div>
+				<p>Pick an existing conversation or start a new one.</p>
+			</div>
+		</div>
+
+		<div class="ai-chat__input-area" id="ai-chat-input-area">
+			<div class="ai-chat__input-wrapper">
+				<textarea
+					class="ai-chat__textarea"
+					id="ai-chat-textarea"
+					placeholder="Ask a question about your data..."
+					rows="1"
+				></textarea>
+				<button type="button" class="btn btn-primary ai-chat__send-btn" id="ai-chat-send-btn">
+					<i class="fa fa-arrow-up"></i>
+				</button>
+			</div>
+			<div class="ai-chat__loading" id="ai-chat-loading" style="display: none;">
+				<i class="fa fa-spinner fa-spin"></i> The AI is thinking...
+			</div>
+		</div>
+	</div>
+</div>
