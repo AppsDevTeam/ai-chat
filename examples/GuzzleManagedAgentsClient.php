@@ -99,6 +99,30 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 		return $this->request('GET', 'sessions/' . rawurlencode($sessionId) . '/events', null, $query);
 	}
 
+	public function uploadFile(string $filename, string $contents, string $mediaType): array
+	{
+		try {
+			$response = $this->getClient()->request('POST', rtrim($this->baseUrl, '/') . '/files', [
+				'headers' => [
+					// Files API + Managed Agents betas; the multipart body must set its
+					// own Content-Type, so the client default (application/json) is unset.
+					'anthropic-beta' => 'files-api-2025-04-14,' . self::MANAGED_AGENTS_BETA,
+					'Content-Type' => null,
+				],
+				'multipart' => [[
+					'name' => 'file',
+					'contents' => $contents,
+					'filename' => $filename,
+					'headers' => ['Content-Type' => $mediaType],
+				]],
+			]);
+
+			return json_decode($response->getBody()->getContents(), true, 512, JSON_THROW_ON_ERROR);
+		} catch (GuzzleException $e) {
+			throw new AiChatException('Files API error: ' . $e->getMessage(), 0, $e);
+		}
+	}
+
 	/**
 	 * @param array<string, mixed>|null $body
 	 * @param array<string, mixed> $query

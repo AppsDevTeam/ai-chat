@@ -57,6 +57,15 @@ interface ManagedAgentsClient
 	public function sendSessionEvents(string $sessionId, array $events): array;
 
 	/**
+	 * POST /files - uploads a file (multipart/form-data, field "file") so it can be
+	 * referenced from a user.message content block ({@see \ADT\AiChat\Attachment}).
+	 * Send the anthropic-beta headers for both the Files API and Managed Agents.
+	 *
+	 * @return array<string, mixed> response body (contains id, filename, mime_type)
+	 */
+	public function uploadFile(string $filename, string $contents, string $mediaType): array;
+
+	/**
 	 * GET /sessions/{id}/events - lists the events of a session (polling).
 	 *
 	 * @return array<string, mixed> response body with a "data" key

@@ -17,5 +17,10 @@ namespace ADT\AiChat\Dispatch;
  */
 interface MessageDispatcher
 {
-	public function dispatch(int|string $conversationId, string $userMessage): void;
+	/**
+	 * @param list<array{fileId: string, mediaType: string, filename: string}> $attachments
+	 *        files already uploaded to the Files API, to be replayed as
+	 *        {@see \ADT\AiChat\Attachment} objects in the worker
+	 */
+	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = []): void;
 }

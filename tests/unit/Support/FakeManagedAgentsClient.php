@@ -93,6 +93,16 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 		return ['type' => 'ok'];
 	}
 
+	public function uploadFile(string $filename, string $contents, string $mediaType): array
+	{
+		return [
+			'id' => 'file_fake_' . md5($filename . $contents),
+			'filename' => $filename,
+			'mime_type' => $mediaType,
+			'size_bytes' => strlen($contents),
+		];
+	}
+
 	public function listSessionEvents(string $sessionId, int $limit = 1000, ?int $page = null): array
 	{
 		$this->listCalls++;

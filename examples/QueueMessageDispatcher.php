@@ -33,11 +33,12 @@ class QueueMessageDispatcher implements MessageDispatcher
 	) {
 	}
 
-	public function dispatch(int|string $conversationId, string $userMessage): void
+	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = []): void
 	{
 		$this->queue->publish('aiChatProcessMessage', [
 			'conversationId' => $conversationId,
 			'userMessage' => $userMessage,
+			'attachments' => $attachments,
 		]);
 	}
 }

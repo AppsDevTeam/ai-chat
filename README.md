@@ -124,6 +124,26 @@ cache counters; output summed), a retry with a fresh session when a stale one
 refuses the message, and hard stops (`maxPolls`, `maxToolCalls`) that surface as
 `TurnTimeoutException` - which is never retried, so a message cannot be duplicated.
 
+### Attachments
+
+Users can attach files (images, PDFs, text/CSV) to a message. Upload each file to
+the Anthropic Files API via `ManagedAgentsClient::uploadFile()` in the web request,
+pass only the returned file ids through your queue, and hand them to the runner as
+`Attachment` objects - it sends them as image/document content blocks of the same
+`user.message`, so the model reads the files directly from its context:
+
+```php
+$file = $client->uploadFile('export.csv', $contents, 'text/plain');
+
+$result = $runner->run($conversation, $userMessage, $persist, [
+    new Attachment($file['id'], 'text/plain', 'export.csv'),
+]);
+```
+
+Media types follow the content-block rules: `image/jpeg|png|gif|webp` become image
+blocks, `application/pdf` and `text/plain` document blocks. Upload other text
+formats (CSV, Markdown, logs) as `text/plain` - the filename keeps the extension.
+
 ## Tools
 
 `ToolHandler` is the default `ToolExecutor`:

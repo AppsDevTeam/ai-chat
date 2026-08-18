@@ -87,6 +87,28 @@ class AgentTurnRunnerTest extends \Codeception\Test\Unit
 		$this->assertSame('user.message', $this->client->sentEvents[0][0]['type']);
 	}
 
+	public function testAttachmentsBecomeContentBlocksBeforeTheText(): void
+	{
+		$this->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Read it']]],
+			['id' => 'e2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+
+		$this->runner()->run($this->conversation(), 'What is wrong in this export?', fn() => null, [
+			new \ADT\AiChat\Attachment('file_img', 'image/png', 'screenshot.png'),
+			new \ADT\AiChat\Attachment('file_pdf', 'application/pdf', 'report.pdf'),
+			new \ADT\AiChat\Attachment('file_txt', 'text/plain', 'export.csv'),
+		]);
+
+		$content = $this->client->sentEvents[0][0]['content'];
+		$this->assertSame([
+			['type' => 'image', 'source' => ['type' => 'file', 'file_id' => 'file_img']],
+			['type' => 'document', 'source' => ['type' => 'file', 'file_id' => 'file_pdf']],
+			['type' => 'document', 'source' => ['type' => 'file', 'file_id' => 'file_txt']],
+			['type' => 'text', 'text' => 'What is wrong in this export?'],
+		], $content);
+	}
+
 	public function testToolRoundTrip(): void
 	{
 		$this->client->frames = [

@@ -6,6 +6,7 @@ namespace App\AiChat;
 
 use ADT\AiChat\AgentProvisioner;
 use ADT\AiChat\AgentTurnRunner;
+use ADT\AiChat\Attachment;
 use ADT\AiChat\Client\ManagedAgentsClient;
 use ADT\AiChat\Dispatch\MessageDispatcher;
 use ADT\AiChat\Exception\AiChatException;
@@ -148,9 +149,26 @@ class ChatService
 
 	/**
 	 * Web request part: cheap and fast. Add your own rate limiting here.
+	 *
+	 * Attachments arrive as uploaded file data; they are pushed to the Anthropic
+	 * Files API right away (seconds, acceptable in a web request) and only the
+	 * returned file ids travel through the queue - the worker replays them as
+	 * content blocks of the user message.
+	 *
+	 * @param list<array{filename: string, contents: string, mediaType: string}> $uploads
 	 */
-	public function sendMessage(Conversation $conversation, string $userMessage): Message
+	public function sendMessage(Conversation $conversation, string $userMessage, array $uploads = []): Message
 	{
+		$attachments = [];
+		foreach ($uploads as $upload) {
+			$file = $this->client->uploadFile($upload['filename'], $upload['contents'], $upload['mediaType']);
+			$attachments[] = [
+				'fileId' => (string) $file['id'],
+				'mediaType' => $upload['mediaType'],
+				'filename' => $upload['filename'],
+			];
+		}
+
 		$message = new Message($conversation, $userMessage);
 		$this->em->persist($message);
 
@@ -160,7 +178,7 @@ class ChatService
 		$conversation->setUpdated(new \DateTimeImmutable());
 		$this->em->flush();
 
-		$this->dispatcher->dispatch($conversation->getId(), $userMessage);
+		$this->dispatcher->dispatch($conversation->getId(), $userMessage, $attachments);
 
 		return $message;
 	}
@@ -172,7 +190,7 @@ class ChatService
 	 * same user message to the session again. Store failures as an error message
 	 * instead, so the frontend can render them.
 	 */
-	public function processMessage(int $conversationId, string $userMessage): void
+	public function processMessage(int $conversationId, string $userMessage, array $attachments = []): void
 	{
 		$conversation = $this->em->find(Conversation::class, $conversationId);
 		if ($conversation === null || $conversation->isDeleted()) {
@@ -186,6 +204,10 @@ class ChatService
 				// Persist the session id as soon as it changes, so a crashed turn
 				// resumes against the right session next time.
 				fn(?string $sessionId) => $this->em->flush(),
+				array_map(
+					static fn(array $a) => new Attachment($a['fileId'], $a['mediaType'], $a['filename'] ?? ''),
+					$attachments,
+				),
 			);
 
 			// Last line of defence: redact direct identifiers from the reply,

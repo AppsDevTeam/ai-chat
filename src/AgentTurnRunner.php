@@ -51,15 +51,21 @@ class AgentTurnRunner
 	 *
 	 * @param callable(?string): void $persistSessionId called whenever the session id
 	 *        of the conversation changes, so the caller can flush it immediately
+	 * @param list<Attachment> $attachments files already uploaded to the Files API,
+	 *        sent as image/document content blocks of the same user.message
 	 * @throws AiChatException|TurnTimeoutException
 	 */
-	public function run(ConversationInterface $conversation, string $userMessage, callable $persistSessionId): TurnResult
-	{
+	public function run(
+		ConversationInterface $conversation,
+		string $userMessage,
+		callable $persistSessionId,
+		array $attachments = [],
+	): TurnResult {
 		$reusedExisting = ($conversation->getSessionId() ?? '') !== '';
 		$sessionId = $this->ensureSession($conversation, $persistSessionId);
 
 		try {
-			return $this->runSessionTurn($sessionId, $userMessage);
+			return $this->runSessionTurn($sessionId, $userMessage, $attachments);
 		} catch (AiChatException $e) {
 			if ($e instanceof TurnTimeoutException || !$reusedExisting) {
 				throw $e;
@@ -70,7 +76,7 @@ class AgentTurnRunner
 
 			$sessionId = $this->ensureSession($conversation, $persistSessionId);
 
-			return $this->runSessionTurn($sessionId, $userMessage);
+			return $this->runSessionTurn($sessionId, $userMessage, $attachments);
 		}
 	}
 
@@ -105,16 +111,24 @@ class AgentTurnRunner
 	}
 
 	/**
+	 * @param list<Attachment> $attachments
 	 * @throws AiChatException
 	 */
-	private function runSessionTurn(string $sessionId, string $userMessage): TurnResult
+	private function runSessionTurn(string $sessionId, string $userMessage, array $attachments = []): TurnResult
 	{
 		// Events present before sending are history and must be ignored.
 		$seen = $this->collectEventIds($sessionId);
 
+		// Attachments go first so the model reads the files before the question.
+		$content = array_map(
+			static fn(Attachment $attachment): array => $attachment->toContentBlock(),
+			$attachments,
+		);
+		$content[] = ['type' => 'text', 'text' => $userMessage];
+
 		$this->client->sendSessionEvents($sessionId, [[
 			'type' => 'user.message',
-			'content' => [['type' => 'text', 'text' => $userMessage]],
+			'content' => $content,
 		]]);
 
 		return $this->pollUntilIdle($sessionId, $seen);
