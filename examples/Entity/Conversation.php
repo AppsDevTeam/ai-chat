@@ -11,7 +11,10 @@ use Doctrine\ORM\Mapping as ORM;
 /**
  * The trait maps the shared columns (title, mca_session_id, deleted, created,
  * updated) including their anonymization defaults; your side adds the id and the
- * owner relation - the package never touches ownership.
+ * owner - here a relation to your user entity, named by ChatOptions::$ownerField.
+ *
+ * ChatService creates conversations with `new Conversation()`, so the constructor
+ * must not require arguments.
  */
 #[ORM\Entity]
 #[ORM\Table(name: 'ai_chat_conversation')]
@@ -24,16 +27,9 @@ class Conversation implements ConversationInterface
 	#[ORM\GeneratedValue]
 	public ?int $id = null;
 
-	/** Replace with a relation to your own user entity. */
-	#[ORM\Column(name: 'user_id')]
-	public int $userId;
-
-	public function __construct(int $userId)
-	{
-		$this->userId = $userId;
-		$this->created = new \DateTimeImmutable();
-		$this->updated = new \DateTimeImmutable();
-	}
+	#[ORM\ManyToOne(targetEntity: \App\Model\Entity\User::class)]
+	#[ORM\JoinColumn(nullable: false, onDelete: 'CASCADE')]
+	public \App\Model\Entity\User $user;
 
 	public function getId(): ?int
 	{

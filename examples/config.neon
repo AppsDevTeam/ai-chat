@@ -1,12 +1,11 @@
-# Complete Nette DI wiring of the chat engine. Symfony users: the same services,
-# just registered in services.yaml.
+# Complete Nette DI wiring of the chat. Symfony users: the same services, just
+# registered in services.yaml.
 
 services:
-	# 1. Transport - your implementation of ManagedAgentsClient (see
-	#    GuzzleManagedAgentsClient.php for a reference one).
-	- App\AiChat\GuzzleManagedAgentsClient(
+	# 1. Transport to the Managed Agents API.
+	- ADT\AiChat\Client\GuzzleManagedAgentsClient(
 		apiKey: %env.ANTHROPIC_API_KEY%
-		model: claude-sonnet-4-6
+		model: claude-sonnet-5-5
 	)
 
 	# 2. Read-only access to the anonymized schema (adt/doctrine-anonymization).
@@ -33,9 +32,24 @@ services:
 		namePrefix: myapp-aichat
 	)
 
-	# 4. Your glue: the hand-off to a queue and the coordinator.
-	- App\AiChat\QueueMessageDispatcher
-	- App\AiChat\ChatService
+	# 4. The coordinator over your entities, the hand-off to the queue and the
+	#    HTTP side of the widget.
+	- ADT\AiChat\ChatOptions(
+		conversationClass: App\AiChat\Entity\Conversation
+		messageClass: App\AiChat\Entity\Message
+		ownerField: user
+	)
+	- ADT\AiChat\Dispatch\BackgroundQueueMessageDispatcher
+	aiChat.service:
+		factory: ADT\AiChat\ChatService
+		# optional: localize the user-facing errors (keys aiChat.error.*)
+		setup:
+			- setTranslator([@App\AiChat\Ui\ChatTranslator, translate])
+	- ADT\AiChat\Http\ChatEndpoint
 
-	# 5. The UI (see examples/ui/) - a generated factory for the chat control.
-	- App\AiChat\Ui\IChatControlFactory
+	- App\AiChat\Ui\ChatTranslator
+
+# adt/background-queue: the worker runs the turn.
+backgroundQueue:
+	callbacks:
+		aiChatProcessMessage: [@aiChat.service, processQueuedMessage]

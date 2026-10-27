@@ -1,18 +1,14 @@
-{* The page shell: the frontend needs jQuery plus the three CDN libraries below
-   (charts, markdown rendering, HTML sanitization) and the two assets from
-   examples/ui/assets/. In a @layout-based project put the includes in the layout
-   blocks instead. *}
-{block styles}
-	<link rel="stylesheet" href="/css/ai-chat.css">
-{/block}
+{* The widget builds its own markup into the root element. Bundle the assets with
+   your build (Vite, webpack, ...):
 
+     import { mountAll } from 'adt-ai-chat';
+     import 'adt-ai-chat/ai-chat.css';
+     import { marked } from 'marked';
+     import DOMPurify from 'dompurify';
+     import Chart from 'chart.js/auto';
+
+     mountAll(document, { marked, DOMPurify, Chart });
+*}
 {block content}
-	{control chat}
-{/block}
-
-{block scripts}
-	<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-	<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-	<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
-	<script src="/js/aiChatControl.js"></script>
+	<div data-ai-chat="{json_encode($config)}"></div>
 {/block}

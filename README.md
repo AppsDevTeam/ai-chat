@@ -9,72 +9,60 @@ so the model can analyze your data without ever seeing personal details.
 composer require adt/ai-chat
 ```
 
-## What it is (and is not)
+## What it is
 
-The package is the **conversation engine**: session handling, the polling loop,
-tool execution, agent provisioning, prompt building and output redaction. It ships
-**no HTTP client, no queue and no frontend** - those live in your project behind
-two small interfaces, because every project already has its own.
+Three layers, use as much as fits your project:
+
+| Layer | Classes | You provide |
+|---|---|---|
+| **Engine** | `AgentTurnRunner`, `ToolHandler`, `AgentProvisioner`, `SystemPromptBuilder`, `PiiResponseFilter` | a `ManagedAgentsClient` (or the bundled Guzzle one) |
+| **Chat** | `ChatService`, `ChatOptions`, `AttachmentPolicy`, `Dispatch\BackgroundQueueMessageDispatcher` | two Doctrine entities (traits included) and a queue |
+| **HTTP + widget** | `Http\ChatEndpoint`, `Http\CsvExport`, `assets/ai-chat.js` + `assets/ai-chat.css` | a few routes/signals calling the endpoint |
 
 ```
-ManagedAgentsClient (you implement)  ──►  AgentTurnRunner  ──►  TurnResult
-                                            │
-ToolHandler (SQL / charts / export) ◄──────┘
-        │
-ReadOnlyQueryExecutor (adt/doctrine-anonymization, read-only account, anon schema)
+browser (ai-chat.js) ──► your routes ──► ChatEndpoint ──► ChatService ──► MessageDispatcher ──► queue
+                                                              ▲                                     │
+                                                              └── processQueuedMessage() (worker) ◄─┘
+                                                                        │
+                                                                  AgentTurnRunner ──► ManagedAgentsClient
+                                                                        │
+                                                                  ToolHandler ──► ReadOnlyQueryExecutor (anon schema)
 ```
+
+A turn takes minutes (polling, tool round-trips), so the web request only stores
+the message and dispatches it; a worker runs the turn and stores the (redacted)
+reply, which the widget picks up by polling.
 
 ## Complete working example
 
-The [`examples/`](examples) directory is a full reference integration you can copy
-into a project and adjust:
+The [`examples/`](examples) directory is a reference integration for Nette:
 
 | File | Shows |
 |---|---|
-| `GuzzleManagedAgentsClient.php` | the transport - raw HTTP with the beta header, over Guzzle |
-| `Entity/Conversation.php`, `Entity/Agent.php` | entities built from the package traits, ownership on your side |
-| `Entity/Message.php` | a minimal transcript entity (the package has no message contract on purpose) |
-| `ChatService.php` | the coordinator - web request stores + dispatches, worker runs the turn, redacts and persists |
-| `QueueMessageDispatcher.php` | the background hand-off (here adt/background-queue) incl. the consumer wiring |
-| `config.neon` | complete DI registration of everything above |
-| `ui/ChatControl.php` + `.latte` | the frontend as a Nette component: AJAX signals, polling, CSV download endpoint, tool-data whitelisting |
-| `ui/ChatPresenter.php` + `.latte` | a page hosting the control incl. the CDN includes (Chart.js, marked, DOMPurify) |
-| `ui/assets/aiChatControl.js`, `ui/assets/ai-chat.css` | the complete browser side: conversations, markdown rendering, charts, tables, context gauge, CSV buttons |
+| `Entity/Conversation.php`, `Entity/Message.php`, `Entity/Agent.php` | the entities built from the package traits |
+| `config.neon` | complete DI registration incl. the background-queue callback |
+| `ui/ChatPresenter.php` + `.latte` | signals translating HTTP requests to `ChatEndpoint` calls, the CSV download, the widget root |
+| `ui/ChatTranslator.php` | localizing the user-facing errors |
 
 The examples are not autoloaded by the package - they are a starting point, not an
-API.
+API. [adt/fancyadmin](https://github.com/AppsDevTeam/fancyadmin) ships a complete
+integration (grid of conversations, chat in the side panel).
 
 ## Wiring
 
-### 1. Implement the transport
+### 1. The transport
 
-`ManagedAgentsClient` maps 1:1 to the Managed Agents REST endpoints (beta). Use
-your existing HTTP client with its logging and error handling:
+`Client\GuzzleManagedAgentsClient` (needs `guzzlehttp/guzzle`) sends the beta
+headers and turns failures into `ApiUnavailableException` with a user-safe detail.
+Extend it (`request()`, `send()`, `createHttpClient()`) for logging or retries, or
+implement `Client\ManagedAgentsClient` over your own HTTP client - it maps 1:1 to
+the REST endpoints.
 
-```php
-class MyAiClient implements ADT\AiChat\Client\ManagedAgentsClient { ... }
-```
+### 2. The entities
 
-### 2. Implement the dispatcher
-
-A turn takes minutes, so it must run in a worker. `MessageDispatcher::dispatch()`
-hands the message to your queue; the worker then runs the turn:
-
-```php
-class QueueMessageDispatcher implements ADT\AiChat\Dispatch\MessageDispatcher
-{
-	public function dispatch(int|string $conversationId, string $userMessage): void
-	{
-		$this->queue->publish('aiChatProcessMessage', compact('conversationId', 'userMessage'));
-	}
-}
-```
-
-### 3. Map the entities
-
-Conversation and agent mapping are your Doctrine entities implementing the package
-interfaces; the traits carry the default mapping, your side adds the id and the
-owner relation:
+Conversation, message and agent mapping are your Doctrine entities; the traits
+carry the columns incl. their anonymization attributes, your side adds the ids and
+the relations:
 
 ```php
 #[ORM\Entity]
@@ -83,7 +71,17 @@ class AiChatConversation implements ADT\AiChat\Entity\ConversationInterface
 	use ADT\AiChat\Entity\ConversationTrait;
 
 	#[ORM\ManyToOne(targetEntity: User::class)]
-	public User $user;    // ownership stays on your side
+	public User $user;    // the owner, named by ChatOptions::$ownerField
+	...
+}
+
+#[ORM\Entity]
+class AiChatMessage implements ADT\AiChat\Entity\MessageInterface
+{
+	use ADT\AiChat\Entity\MessageTrait;
+
+	#[ORM\ManyToOne(targetEntity: AiChatConversation::class)]
+	protected ConversationInterface $conversation;    // ChatOptions::$conversationField
 	...
 }
 
@@ -95,7 +93,67 @@ class AiChatAgent implements ADT\AiChat\Entity\AgentInterface
 }
 ```
 
-### 4. Provision the agent
+`ChatService` creates conversations and messages with `new $class()`, so the
+constructors must not require arguments.
+
+### 3. The chat service and the queue
+
+```php
+$chat = new ChatService($em, $client, $toolHandler, $queryExecutor, $provisioner,
+	new BackgroundQueueMessageDispatcher($backgroundQueue),    // or your MessageDispatcher
+	$piiFilter, $piiValueCollector,
+	new ChatOptions(AiChatConversation::class, AiChatMessage::class, ownerField: 'user'),
+);
+```
+
+- web request: `enqueueMessage($conversation, $text, $uploads)` - empty-message and
+  rate-limit checks (`rateLimitPerMinute`/`rateLimitPerHour` across all
+  conversations of the owner), attachments to the Files API, the user message
+  stored, the title set, the message dispatched
+- worker: `processQueuedMessage($conversationId, $text, $attachments)` - runs the
+  turn, redacts the reply and stores it; failures are stored as an error reply
+  (no exception escapes back to the queue, a retry would duplicate the message)
+
+With adt/background-queue register the callback
+`aiChatProcessMessage: [@ADT\AiChat\ChatService, processQueuedMessage]`.
+
+Everything taking an owner scopes the data to it - a foreign conversation reads as
+"not found". Who may see whose conversations is your decision
+(`findConversation()` skips the check for privileged views).
+
+### 4. The HTTP side and the widget
+
+`ChatEndpoint` returns the JSON payloads of the widget actions (`conversations`,
+`load`, `send`, `poll`, `delete`) and the streamed CSV of the export tool
+(`export`). Failures come back as `{success: false, error}`. Only displayable tool
+results reach the browser - SQL, schema and table names stay on the server.
+
+The widget is a vanilla ES module (npm package `adt-ai-chat` in this repository):
+
+```js
+import { mountAll } from 'adt-ai-chat';
+import 'adt-ai-chat/ai-chat.css';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import Chart from 'chart.js/auto';
+
+mountAll(document, { marked, DOMPurify, Chart });
+```
+
+```html
+<div data-ai-chat='{"urls": {"conversations": "...", "load": "...", "send": "...",
+     "poll": "...", "delete": "...", "export": "..."}, "mode": "full"}'></div>
+```
+
+`mode: "single"` renders one conversation without the list (a side panel); without
+`conversationId` the first message starts a new conversation. Other options:
+`readOnly`, `locale`, `accept`/`maxAttachments`/`maxAttachmentBytes` (take them
+from `AttachmentPolicy`), `labels` (all texts), `icons` (Font Awesome classes by
+default), `pollIntervalMs`, `fitViewport`. The root dispatches
+`ai-chat:conversation` and `ai-chat:deleted` events. No inline styles or scripts -
+works under a strict CSP; colours are CSS variables (`--ai-chat-*`).
+
+### 5. Provision the agent
 
 Run right after regenerating the anonymized views (same deploy step). Idempotent:
 an existing agent is updated in place (same id, new version) with the current
@@ -105,9 +163,10 @@ system prompt and tool definitions:
 [$mapping, $created] = $provisioner->ensureProvisioned($schemaName);
 ```
 
-### 5. Run a turn (in the worker)
+### Running a turn without ChatService
 
 ```php
+// What ChatService::processQueuedMessage() does for you:
 $runner = new AgentTurnRunner($client, $toolHandler, $provisioner->resolver($schemaName));
 
 $result = $runner->run($conversation, $userMessage, function (?string $sessionId) use ($em): void {
@@ -126,11 +185,11 @@ refuses the message, and hard stops (`maxPolls`, `maxToolCalls`) that surface as
 
 ### Attachments
 
-Users can attach files (images, PDFs, text/CSV) to a message. Upload each file to
-the Anthropic Files API via `ManagedAgentsClient::uploadFile()` in the web request,
-pass only the returned file ids through your queue, and hand them to the runner as
-`Attachment` objects - it sends them as image/document content blocks of the same
-`user.message`, so the model reads the files directly from its context:
+Users can attach files (images, PDFs, text/CSV) to a message. `ChatService` checks
+them against `AttachmentPolicy` (count, size, media types), uploads them to the
+Files API in the web request and passes only the file ids through the queue; the
+runner sends them as image/document content blocks of the same `user.message`.
+Without ChatService:
 
 ```php
 $file = $client->uploadFile('export.csv', $contents, 'text/plain');
@@ -141,8 +200,39 @@ $result = $runner->run($conversation, $userMessage, $persist, [
 ```
 
 Media types follow the content-block rules: `image/jpeg|png|gif|webp` become image
-blocks, `application/pdf` and `text/plain` document blocks. Upload other text
-formats (CSV, Markdown, logs) as `text/plain` - the filename keeps the extension.
+blocks, `application/pdf` and `text/plain` document blocks. Other text formats
+(CSV, Markdown, logs) go as `text/plain` - the filename keeps the extension.
+
+## Translations
+
+User-facing errors are `AiChatException`s with a translation key; pass a
+translator to `ChatService::setTranslator(fn(string $key, array $params, string
+$default): string)`. Without it the English defaults are used. Keys:
+
+| Key | Params |
+|---|---|
+| `aiChat.error.emptyMessage` | |
+| `aiChat.error.rateLimitMinute`, `aiChat.error.rateLimitHour` | `limit` |
+| `aiChat.error.tooManyAttachments` | `max` |
+| `aiChat.error.attachmentTooLarge` | `name`, `max` (MB) |
+| `aiChat.error.attachmentType`, `aiChat.error.attachmentUploadFailed` | `name` |
+| `aiChat.error.serviceUnavailable` | `detail` |
+| `aiChat.error.turnTimeout`, `aiChat.error.tooManyToolCalls` | |
+| `aiChat.error.conversationNotFound`, `aiChat.error.invalidExport` | |
+| `aiChat.error.unexpected` | |
+| `aiChat.export.empty`, `aiChat.export.failed` | |
+
+The widget texts are passed in its `labels` config.
+
+## Upgrading to 0.4
+
+- `ConversationInterface` has a new `setCreated()` (the trait implements it).
+- `AiChatException` carries an optional translation key - `TurnTimeoutException`s
+  now have one, so translate them via `describeError()`.
+- The example `GuzzleManagedAgentsClient`, `ChatService`, dispatcher and UI moved
+  into the package (`Client\`, `ChatService`, `Dispatch\`, `Http\`, `assets/`);
+  the example `Message` entity is replaced by `MessageInterface` + `MessageTrait`
+  (adds an `attachments` column).
 
 ## Tools
 
@@ -182,5 +272,7 @@ vendor/bin/codecept run unit
 
 The suite drives the full turn loop against a scriptable fake of the Managed
 Agents API (tool round-trips, history isolation, timeouts, stale-session retry,
-token accounting) plus the tool handler, prompt builder and redaction - no network
-and no database.
+token accounting), the chat service and endpoint over an in-memory SQLite database
+(ownership, rate limits, attachments, error replies, the tool-data whitelist, CSV
+export), the Guzzle transport over a mock handler, plus the tool handler, prompt
+builder and redaction - no network.
