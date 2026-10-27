@@ -566,6 +566,13 @@ export class AiChat {
 				return;
 			}
 
+			// The page removed the chat (closed side panel, replaced snippet) - nobody
+			// would see the reply, so stop and let the instance go.
+			if (!this.root.isConnected) {
+				this.destroy();
+				return;
+			}
+
 			if (Date.now() - this.pollStartedAt > this.config.pollMaxMs) {
 				this.setLoading(false);
 				this.appendError(this.labels.errorTimeout);
