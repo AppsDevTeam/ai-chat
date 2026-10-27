@@ -81,6 +81,12 @@ trait ConversationTrait
 		return $this->created;
 	}
 
+	public function setCreated(\DateTimeImmutable $created): static
+	{
+		$this->created = $created;
+		return $this;
+	}
+
 	public function getUpdated(): \DateTimeImmutable
 	{
 		return $this->updated;

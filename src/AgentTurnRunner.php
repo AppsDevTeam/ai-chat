@@ -124,7 +124,10 @@ class AgentTurnRunner
 			static fn(Attachment $attachment): array => $attachment->toContentBlock(),
 			$attachments,
 		);
-		$content[] = ['type' => 'text', 'text' => $userMessage];
+		// A message may consist of attachments only; an empty text block is refused.
+		if ($userMessage !== '' || !$content) {
+			$content[] = ['type' => 'text', 'text' => $userMessage];
+		}
 
 		$this->client->sendSessionEvents($sessionId, [[
 			'type' => 'user.message',
@@ -177,7 +180,10 @@ class AgentTurnRunner
 						// A timeout is deliberately NOT retried with a new session, so a
 						// runaway agent cannot cause the user message to be re-sent.
 						if (++$toolCalls > $this->options->maxToolCalls) {
-							throw new TurnTimeoutException('The assistant made too many tool calls in a single turn and was stopped. Please refine your question.');
+							throw TurnTimeoutException::translatable(
+								'The assistant made too many tool calls in a single turn and was stopped. Please refine your question.',
+								'aiChat.error.tooManyToolCalls',
+							);
 						}
 
 						$toolResult = $this->toolExecutor->handleToolCall(
@@ -240,7 +246,10 @@ class AgentTurnRunner
 		// Running out of polls without a terminal state must NOT pass as a successful
 		// (empty or partial) reply - the session is still mid-turn.
 		if (!$completed) {
-			throw new TurnTimeoutException('The assistant did not finish responding in time. Please send your message again.');
+			throw TurnTimeoutException::translatable(
+				'The assistant did not finish responding in time. Please send your message again.',
+				'aiChat.error.turnTimeout',
+			);
 		}
 
 		return new TurnResult(implode("\n", $texts), $toolData, $tokensInput, $tokensOutput);

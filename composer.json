@@ -3,7 +3,15 @@
   "description": "AI chat over your database: an Anthropic Managed Agents conversation engine with safe read-only SQL tools over anonymized views",
   "type": "library",
   "license": "MIT",
-  "keywords": ["ai", "chat", "llm", "anthropic", "claude", "agents", "doctrine"],
+  "keywords": [
+    "ai",
+    "chat",
+    "llm",
+    "anthropic",
+    "claude",
+    "agents",
+    "doctrine"
+  ],
   "authors": [
     {
       "name": "Apps Dev Team",
@@ -14,11 +22,19 @@
   "require": {
     "php": ">=8.1",
     "adt/doctrine-anonymization": "^0.2",
-    "doctrine/orm": "^2.14 || ^3.0"
+    "doctrine/orm": "^2.14 || ^3.0",
+    "psr/log": "^1.1 || ^2.0 || ^3.0"
   },
   "require-dev": {
     "codeception/codeception": "^5.0",
-    "codeception/module-asserts": "^3.0"
+    "codeception/module-asserts": "^3.0",
+    "guzzlehttp/guzzle": "^7.5",
+    "symfony/cache": "^6.4 || ^7.0"
+  },
+  "suggest": {
+    "guzzlehttp/guzzle": "For ADT\\AiChat\\Client\\GuzzleManagedAgentsClient, the default transport",
+    "adt/background-queue": "For ADT\\AiChat\\Dispatch\\BackgroundQueueMessageDispatcher",
+    "nette/http": "For ADT\\AiChat\\AttachmentUpload::fromNetteFileUpload()"
   },
   "autoload": {
     "psr-4": {

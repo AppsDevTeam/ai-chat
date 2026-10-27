@@ -9,6 +9,8 @@ namespace ADT\AiChat\Entity;
  *
  * Implement it on your entity with {@see ConversationTrait}; the owner relation
  * (your User entity) and anything else project specific stays on your side.
+ * {@see \ADT\AiChat\ChatService} creates conversations with `new $class()`, so
+ * keep the constructor free of required arguments.
  */
 interface ConversationInterface
 {
@@ -28,6 +30,8 @@ interface ConversationInterface
 	public function setDeleted(bool $deleted): static;
 
 	public function getCreated(): \DateTimeImmutable;
+
+	public function setCreated(\DateTimeImmutable $created): static;
 
 	public function getUpdated(): \DateTimeImmutable;
 
