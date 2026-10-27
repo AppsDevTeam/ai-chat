@@ -18,6 +18,7 @@ Three layers, use as much as fits your project:
 | **Engine** | `AgentTurnRunner`, `ToolHandler`, `AgentProvisioner`, `SystemPromptBuilder`, `PiiResponseFilter` | a `ManagedAgentsClient` (or the bundled Guzzle one) |
 | **Chat** | `ChatService`, `ChatOptions`, `AttachmentPolicy`, `Dispatch\BackgroundQueueMessageDispatcher` | two Doctrine entities (traits included) and a queue |
 | **HTTP + widget** | `Http\ChatEndpoint`, `Http\CsvExport`, `assets/ai-chat.js` + `assets/ai-chat.css` | a few routes/signals calling the endpoint |
+| **MCP server** | `Mcp\McpServer`, `Mcp\McpResponse` | one authenticated POST route (see [MCP server](#mcp-server)) |
 
 ```
 browser (ai-chat.js) ──► your routes ──► ChatEndpoint ──► ChatService ──► MessageDispatcher ──► queue
@@ -202,6 +203,45 @@ $result = $runner->run($conversation, $userMessage, $persist, [
 Media types follow the content-block rules: `image/jpeg|png|gif|webp` become image
 blocks, `application/pdf` and `text/plain` document blocks. Other text formats
 (CSV, Markdown, logs) go as `text/plain` - the filename keeps the extension.
+
+## MCP server
+
+`Mcp\McpServer` publishes the data tools (`get_database_schema`, `execute_sql`) over
+the [Model Context Protocol](https://modelcontextprotocol.io), so other agents -
+Claude Code, Claude Desktop, a claude.ai connector - can query the same anonymized
+data the chat uses. Transport is **Streamable HTTP, stateless**: every JSON-RPC
+message is a POST answered by one `application/json` response (no SSE, no session).
+Supported protocol versions: `2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`.
+
+```php
+$server = new McpServer(
+    $toolHandler,                       // the same ToolExecutor the chat uses
+    new PiiResponseFilter(),            // applied to every string of every tool result
+    serverName: 'my-app',
+    serverVersion: '1.0.0',
+    instructions: McpServer::DEFAULT_INSTRUCTIONS, // shown to the client model
+    logger: $auditLogger,               // one info record per tool call
+);
+
+// in your controller, AFTER authenticating the caller:
+$response = $server->handle($request->getMethod(), $request->getBody(), ['user' => $userId]);
+// -> $response->status, $response->headers, $response->body (null = no body)
+```
+
+Authentication and authorization stay in your application: check the bearer token
+and the user's permission first and answer `McpResponse::unauthorized()` /
+`McpResponse::forbidden()` otherwise. The tools are read-only over the read-only
+account, results are row-capped like in the chat, and chat-only tools (charts,
+tables, CSV export) are never exposed.
+
+Connect a client:
+
+```bash
+claude mcp add --transport http my-app https://example.com/mcp --header "Authorization: Bearer <token>"
+```
+
+[adt/fancyadmin](https://github.com/AppsDevTeam/fancyadmin) ships the integration
+(per-user tokens, endpoint presenter, ACL).
 
 ## Translations
 
