@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use ADT\AiChat\Client\ApiKeyProvider;
 use ADT\AiChat\Client\GuzzleManagedAgentsClient;
 use ADT\AiChat\Exception\ApiUnavailableException;
 use GuzzleHttp\Client;
@@ -20,24 +21,56 @@ class GuzzleManagedAgentsClientTest extends \Codeception\Test\Unit
 	/** @var list<array{request: \Psr\Http\Message\RequestInterface}> */
 	private array $history = [];
 
-	private function client(): GuzzleManagedAgentsClient
+	private function client(string|ApiKeyProvider $apiKey = 'sk-test'): GuzzleManagedAgentsClient
 	{
 		$this->mock = new MockHandler();
 		$this->history = [];
 		$stack = HandlerStack::create($this->mock);
 		$stack->push(Middleware::history($this->history));
 
-		return new class ($stack) extends GuzzleManagedAgentsClient {
-			public function __construct(private readonly HandlerStack $stack)
+		return new class ($stack, $apiKey) extends GuzzleManagedAgentsClient {
+			public function __construct(private readonly HandlerStack $stack, string|ApiKeyProvider $apiKey)
 			{
-				parent::__construct('sk-test', 'claude-test', 'https://api.test/v1/');
+				parent::__construct($apiKey, 'claude-test', 'https://api.test/v1/');
 			}
 
 			protected function createHttpClient(): ClientInterface
 			{
-				return new Client(['handler' => $this->stack, 'headers' => ['x-api-key' => $this->apiKey]]);
+				return new Client(['handler' => $this->stack]);
 			}
 		};
+	}
+
+	public function testFixedKeyIsSentWithEveryRequest(): void
+	{
+		$client = $this->client();
+		$this->mock->append(new Response(200, [], '{"id":"env_1"}'));
+
+		$client->createEnvironment('env');
+
+		$this->assertSame('sk-test', $this->history[0]['request']->getHeaderLine('x-api-key'));
+	}
+
+	/** A queue consumer keeps one client for hours - a changed key must apply at once. */
+	public function testProviderIsAskedOnEveryRequest(): void
+	{
+		$provider = new class implements ApiKeyProvider {
+			public string $key = 'sk-first';
+
+			public function getApiKey(): string
+			{
+				return $this->key;
+			}
+		};
+		$client = $this->client($provider);
+		$this->mock->append(new Response(200, [], '{"id":"env_1"}'), new Response(200, [], '{"id":"env_2"}'));
+
+		$client->createEnvironment('env');
+		$provider->key = 'sk-second';
+		$client->createEnvironment('env');
+
+		$this->assertSame('sk-first', $this->history[0]['request']->getHeaderLine('x-api-key'));
+		$this->assertSame('sk-second', $this->history[1]['request']->getHeaderLine('x-api-key'));
 	}
 
 	public function testSessionTitleIsSanitizedAndBetaHeaderSent(): void

@@ -59,6 +59,13 @@ Extend it (`request()`, `send()`, `createHttpClient()`) for logging or retries, 
 implement `Client\ManagedAgentsClient` over your own HTTP client - it maps 1:1 to
 the REST endpoints.
 
+The API key is either a string, or a `Client\ApiKeyProvider` asked on every request
+- for a key per tenant (entered in the tenant's settings) that a long-running queue
+consumer picks up without a restart. Agents, environments, sessions and files
+belong to the workspace of the key they were created with, so after a key change
+provision the agent again (step 5) - and sessions started under the old key cannot
+continue.
+
 ### 2. The entities
 
 Conversation, message and agent mapping are your Doctrine entities; the traits

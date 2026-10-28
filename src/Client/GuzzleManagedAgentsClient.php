@@ -29,11 +29,13 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 	private ?ClientInterface $client = null;
 
 	/**
+	 * @param string|ApiKeyProvider $apiKey a fixed key, or a provider asked on every
+	 *        request (a key per tenant, changeable at runtime)
 	 * @param float $timeout seconds per request; file uploads and long event lists
 	 *        need more than the Guzzle default
 	 */
 	public function __construct(
-		protected readonly string $apiKey,
+		protected readonly string|ApiKeyProvider $apiKey,
 		protected readonly string $model,
 		protected readonly string $baseUrl = 'https://api.anthropic.com/v1/',
 		protected readonly string $anthropicVersion = '2023-06-01',
@@ -158,6 +160,10 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 	 */
 	protected function send(string $method, string $path, array $options): array
 	{
+		// Per request, not in the client defaults - the HTTP client is reused while
+		// the key from a provider may change.
+		$options['headers']['x-api-key'] = $this->getApiKey();
+
 		try {
 			$response = $this->getHttpClient()->request($method, rtrim($this->baseUrl, '/') . '/' . $path, $options);
 
@@ -173,12 +179,16 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 	{
 		return new Client([
 			'headers' => [
-				'x-api-key' => $this->apiKey,
 				'anthropic-version' => $this->anthropicVersion,
 			],
 			'timeout' => $this->timeout,
 			'connect_timeout' => $this->connectTimeout,
 		]);
+	}
+
+	protected function getApiKey(): string
+	{
+		return $this->apiKey instanceof ApiKeyProvider ? $this->apiKey->getApiKey() : $this->apiKey;
 	}
 
 	/**
