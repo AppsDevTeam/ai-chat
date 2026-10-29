@@ -489,7 +489,7 @@ class ChatService
 
 	/**
 	 * Composed lazily: the agent resolver depends on the runtime schema name and
-	 * fails with a helpful message when provisioning has not run yet.
+	 * provisions or updates the agent before a new session when needed.
 	 */
 	protected function getRunner(): AgentTurnRunner
 	{

@@ -32,6 +32,10 @@ trait AgentTrait
 	#[Description('Date and time when the agent was last re-provisioned (system prompt / tools updated); null if never updated since creation.')]
 	protected ?\DateTimeImmutable $updated = null;
 
+	#[ORM\Column(length: 64, nullable: true)]
+	#[Description('SHA-256 of the system prompt and tool definitions the agent was last provisioned with; a different value means the agent is outdated and gets updated before the next session.')]
+	protected ?string $fingerprint = null;
+
 	public function getSchemaName(): string
 	{
 		return $this->schemaName;
@@ -74,6 +78,17 @@ trait AgentTrait
 	public function setUpdated(?\DateTimeImmutable $updated): static
 	{
 		$this->updated = $updated;
+		return $this;
+	}
+
+	public function getFingerprint(): ?string
+	{
+		return $this->fingerprint;
+	}
+
+	public function setFingerprint(?string $fingerprint): static
+	{
+		$this->fingerprint = $fingerprint;
 		return $this;
 	}
 }

@@ -8,9 +8,9 @@ namespace ADT\AiChat\Entity;
  * Mapping of an anonymized schema (= one instance of your application) to the
  * Managed Agents agent and environment provisioned for it.
  *
- * Created automatically by {@see \ADT\AiChat\AgentProvisioner}; at runtime the
- * engine looks the agent up by the schema name, so no ids are ever copied into
- * config by hand.
+ * Created automatically by {@see \ADT\AiChat\AgentProvisioner} - lazily when the
+ * first session needs it, or explicitly - so no ids are ever copied into config by
+ * hand.
  */
 interface AgentInterface
 {
@@ -30,4 +30,9 @@ interface AgentInterface
 
 	/** When the agent was last re-provisioned (prompt/tools updated); null = never. */
 	public function setUpdated(?\DateTimeImmutable $updated): static;
+
+	/** Hash of the system prompt and tools the agent was last provisioned with; null = unknown. */
+	public function getFingerprint(): ?string;
+
+	public function setFingerprint(?string $fingerprint): static;
 }

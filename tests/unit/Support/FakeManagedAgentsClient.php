@@ -37,6 +37,14 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 
 	public int $listCalls = 0;
 
+	public int $createdAgents = 0;
+
+	/** @var list<string> agent ids passed to updateAgent() */
+	public array $updatedAgents = [];
+
+	/** Fail agent creation and updates (e.g. an invalid API key). */
+	public bool $failAgentCalls = false;
+
 	private bool $turnStarted = false;
 
 	private int $released = 0;
@@ -45,11 +53,21 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 
 	public function createAgent(string $name, string $systemPrompt, array $tools): array
 	{
+		if ($this->failAgentCalls) {
+			throw new \RuntimeException('401 invalid x-api-key (test)');
+		}
+		$this->createdAgents++;
+
 		return ['id' => 'agent_fake', 'version' => 1];
 	}
 
 	public function updateAgent(string $agentId, string $systemPrompt, array $tools): array
 	{
+		if ($this->failAgentCalls) {
+			throw new \RuntimeException('401 invalid x-api-key (test)');
+		}
+		$this->updatedAgents[] = $agentId;
+
 		return ['id' => $agentId, 'version' => 2];
 	}
 

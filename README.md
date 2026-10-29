@@ -63,8 +63,9 @@ The API key is either a string, or a `Client\ApiKeyProvider` asked on every requ
 - for a key per tenant (entered in the tenant's settings) that a long-running queue
 consumer picks up without a restart. Agents, environments, sessions and files
 belong to the workspace of the key they were created with, so after a key change
-provision the agent again (step 5) - and sessions started under the old key cannot
-continue.
+drop the agent mapping (the next session provisions a new agent, step 5) or call
+`ensureProvisioned()` right away to validate the key - and sessions started under
+the old key cannot continue.
 
 ### 2. The entities
 
@@ -161,15 +162,25 @@ default), `pollIntervalMs`, `fitViewport`. The root dispatches
 `ai-chat:conversation` and `ai-chat:deleted` events. No inline styles or scripts -
 works under a strict CSP; colours are CSS variables (`--ai-chat-*`).
 
-### 5. Provision the agent
+### 5. Provisioning the agent
 
-Run right after regenerating the anonymized views (same deploy step). Idempotent:
-an existing agent is updated in place (same id, new version) with the current
-system prompt and tool definitions:
+Nothing to do in the deploy: `AgentProvisioner::resolver()` runs before every new
+session, creates the agent and environment when the schema has none, and updates
+the same agent (new version, same id) when the system prompt or the tool
+definitions changed. Changes are detected by a fingerprint stored on the mapping
+(`AgentTrait::$fingerprint`), so an unchanged agent costs no API call. The deploy
+thus needs no API key, and a broken key of one tenant fails only that tenant's
+chat.
+
+Provisioning on demand - e.g. from a console command, or to validate a newly
+entered API key - updates the agent even when it looks current:
 
 ```php
 [$mapping, $created] = $provisioner->ensureProvisioned($schemaName);
 ```
+
+Upgrading from 0.6: the trait adds a nullable `fingerprint` column (migration in
+your project); existing agents have none and are updated once by the next session.
 
 ### Running a turn without ChatService
 

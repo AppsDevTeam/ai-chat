@@ -34,6 +34,8 @@ final class ChatTestEnvironment
 	public readonly FakeManagedAgentsClient $client;
 	public readonly StubQueryExecutor $queryExecutor;
 	public readonly RecordingDispatcher $dispatcher;
+	/** Not provisioned up front - the first session provisions the agent lazily. */
+	public readonly AgentProvisioner $provisioner;
 	public readonly ChatService $chat;
 	public readonly ChatEndpoint $endpoint;
 
@@ -63,7 +65,7 @@ final class ChatTestEnvironment
 			$this->em,
 			TestAgent::class,
 		);
-		$provisioner->ensureProvisioned($this->queryExecutor->getSchemaName());
+		$this->provisioner = $provisioner;
 
 		$this->chat = new ChatService(
 			$this->em,
