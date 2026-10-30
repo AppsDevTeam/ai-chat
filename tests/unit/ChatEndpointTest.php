@@ -130,4 +130,12 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		rewind($out);
 		$this->assertSame("\u{FEFF}id,name\n1,Šárka\n2,Jan\n", stream_get_contents($out));
 	}
+
+	public function testSentContentGoesToTheWidgetExceptOnErrors(): void
+	{
+		$message = (new TestMessage())->setContent('Hi')->setAuthor('ai')->setSentContent('Call [PHONE_1]')->setCreated(new \DateTimeImmutable());
+
+		$this->assertSame('Call [PHONE_1]', $this->env->endpoint->clientMessage($message)['sent_content']);
+		$this->assertNull($this->env->endpoint->clientMessage($message->setError(true))['sent_content']);
+	}
 }

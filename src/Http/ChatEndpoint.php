@@ -206,6 +206,8 @@ class ChatEndpoint
 				'size' => (int) ($attachment['size'] ?? 0),
 			], $message->getAttachments() ?? []),
 			'error' => $message->isError(),
+			// What the AI received instead of the question (anchors), shown above the reply
+			'sent_content' => $message->isError() ? null : $message->getSentContent(),
 			'created' => $message->getCreated()->format(DATE_ATOM),
 		];
 	}

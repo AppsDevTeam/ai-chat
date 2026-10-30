@@ -7,9 +7,17 @@ use ADT\AiChat\AttachmentUpload;
 use ADT\AiChat\ChatOptions;
 use ADT\AiChat\Entity\MessageInterface;
 use ADT\AiChat\Exception\AiChatException;
+use ADT\AiChat\Pseudonymization\OpenAiCompatiblePiiDetector;
+use ADT\AiChat\Pseudonymization\PiiCheckUnavailableException;
+use ADT\AiChat\Pseudonymization\PiiDetector;
+use ADT\AiChat\Pseudonymization\Pseudonymizer;
+use ADT\AiChat\Pseudonymization\PseudonymizedText;
 use ADT\AiChat\Tests\Support\ChatTestEnvironment;
 use ADT\AiChat\Tests\Support\Entity\TestConversation;
 use ADT\AiChat\Tests\Support\Entity\TestMessage;
+use ADT\AiChat\Tests\Support\Entity\TestPseudonym;
+use ADT\AiChat\Tests\Support\FakeSubjectResolver;
+use Doctrine\ORM\EntityManager;
 
 class ChatServiceTest extends \Codeception\Test\Unit
 {
@@ -248,5 +256,69 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		);
 		$this->assertNull($this->env->chat->findExport($message, 'wrong'));
 		$this->assertNull($this->env->chat->findExport($message, ''));
+	}
+
+	public function testPseudonymizedTurn(): void
+	{
+		$env = $this->pseudonymizingEnvironment();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->scriptReply('Called [PHONE_1] about [SUBJECT #5], mail [EMAIL_1].');
+
+		$env->chat->processQueuedMessage($conversation->getId(), 'Call 777 111 222 about jane@example.test, mail x.y@example.test');
+
+		$sent = json_encode($env->client->sentEvents, JSON_UNESCAPED_UNICODE);
+		$this->assertStringContainsString('Call [PHONE_1] about [SUBJECT #5], mail [EMAIL_1]', $sent);
+		$this->assertStringNotContainsString('777 111 222', $sent);
+		$this->assertStringNotContainsString('example.test', $sent);
+
+		$reply = $env->chat->getMessages($conversation)[0];
+		// Restored after the output filter - it would redact the real e-mail otherwise
+		$this->assertSame('Called 777 111 222 about Jane Doe, mail x.y@example.test.', $reply->getContent());
+		$this->assertSame('Call [PHONE_1] about [SUBJECT #5], mail [EMAIL_1]', $reply->getSentContent());
+
+		[$event, $conversationId, $result] = $env->piiCheckListener->events[0];
+		$this->assertSame('checked', $event);
+		$this->assertSame($conversation->getId(), $conversationId);
+		$this->assertInstanceOf(PseudonymizedText::class, $result);
+		$this->assertSame(['EMAIL' => 1, 'PHONE' => 1, 'SUBJECT' => 1], $result->findings);
+	}
+
+	public function testNothingReplacedLeavesNoSentContent(): void
+	{
+		$env = $this->pseudonymizingEnvironment();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->scriptReply('42');
+
+		$env->chat->processQueuedMessage($conversation->getId(), 'How many clients?');
+
+		$this->assertNull($env->chat->getMessages($conversation)[0]->getSentContent());
+		$this->assertStringContainsString('How many clients?', json_encode($env->client->sentEvents));
+	}
+
+	public function testUnavailableRequiredCheckRepliesWithAnErrorInsteadOfTheTurn(): void
+	{
+		$env = $this->pseudonymizingEnvironment(new OpenAiCompatiblePiiDetector(null, null, required: true));
+		$env->chat->setTranslator(static fn(string $key, array $params, string $default): string => "[$key] $default");
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->processQueuedMessage($conversation->getId(), 'Call 777 111 222');
+
+		$this->assertSame([], $env->client->sentEvents, 'Nothing goes to the AI');
+		$messages = $env->chat->getMessages($conversation);
+		$this->assertCount(1, $messages);
+		$this->assertTrue($messages[0]->isError());
+		$this->assertSame('[aiChat.error.piiCheckUnavailable] ' . PiiCheckUnavailableException::USER_MESSAGE, $messages[0]->getContent());
+		$this->assertNull($messages[0]->getSentContent());
+		$this->assertSame([], $env->em->getRepository(TestPseudonym::class)->findAll(), 'No anchors');
+		$this->assertSame('unavailable', $env->piiCheckListener->events[0][0]);
+	}
+
+	private function pseudonymizingEnvironment(?PiiDetector $detector = null): ChatTestEnvironment
+	{
+		$resolver = new FakeSubjectResolver(subjects: ['jane@example.test' => 5], labels: [5 => 'Jane Doe']);
+
+		return new ChatTestEnvironment(
+			pseudonymizer: static fn(EntityManager $em): Pseudonymizer => new Pseudonymizer($em, TestPseudonym::class, $detector, $resolver),
+		);
 	}
 }

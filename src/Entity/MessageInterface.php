@@ -58,6 +58,15 @@ interface MessageInterface
 	 */
 	public function setAttachments(?array $attachments): static;
 
+	/**
+	 * The user's question as the AI received it - with anchors instead of personal
+	 * data ({@see \ADT\AiChat\Pseudonymization\Pseudonymizer}); set on the reply,
+	 * null when nothing was replaced.
+	 */
+	public function getSentContent(): ?string;
+
+	public function setSentContent(?string $sentContent): static;
+
 	public function getTokensInput(): ?int;
 
 	public function setTokensInput(?int $tokensInput): static;

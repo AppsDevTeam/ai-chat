@@ -43,6 +43,11 @@ trait MessageTrait
 	#[Description('JSON list of the files attached to the user message (Files API id, media type, file name, size).')]
 	protected ?string $attachments = null;
 
+	#[ORM\Column(name: 'sent_content', type: 'text', nullable: true)]
+	#[Anonymize(AnonymizationType::NOTE)]
+	#[Description('The question of the user as the assistant received it - personal data replaced with anchors; set on the reply.')]
+	protected ?string $sentContent = null;
+
 	#[ORM\Column(name: 'tokens_input', nullable: true)]
 	#[Description('Context window size used by the last model request of the turn (input incl. cache tokens).')]
 	protected ?int $tokensInput = null;
@@ -111,6 +116,17 @@ trait MessageTrait
 	public function setAttachments(?array $attachments): static
 	{
 		$this->attachments = self::encodeJsonList($attachments);
+		return $this;
+	}
+
+	public function getSentContent(): ?string
+	{
+		return $this->sentContent;
+	}
+
+	public function setSentContent(?string $sentContent): static
+	{
+		$this->sentContent = $sentContent;
 		return $this;
 	}
 
