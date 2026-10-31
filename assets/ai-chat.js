@@ -914,10 +914,16 @@ export class AiChat {
 			// Messages of other senders may arrive meanwhile - show them, and stop only
 			// once the reply (or an error) is there.
 			const messages = data?.messages || [];
-			messages.forEach((message) => this.appendMessage(message));
+			const items = messages.map((message) => this.appendMessage(message));
 			if (messages.length) {
 				afterId = messages[messages.length - 1].id ?? afterId;
-				this.scrollToBottom();
+				// A long reply is read from its start, not from its end.
+				const reply = items[messages.findIndex((message) => message.author !== 'user' && !message.error)];
+				if (reply) {
+					this.scrollToMessage(reply);
+				} else {
+					this.scrollToBottom();
+				}
 			}
 
 			if (messages.some((message) => message.author !== 'user' || message.error)) {
@@ -1280,6 +1286,10 @@ export class AiChat {
 
 	scrollToBottom() {
 		this.messages.scrollTop = this.messages.scrollHeight;
+	}
+
+	scrollToMessage(item) {
+		this.messages.scrollTop += item.getBoundingClientRect().top - this.messages.getBoundingClientRect().top;
 	}
 
 	formatDate(value) {
