@@ -244,13 +244,15 @@ class ChatEndpoint
 	 */
 	public function clientConversation(ConversationInterface $conversation): array
 	{
+		$modelChoice = $this->chat->getModelChoice($conversation);
+
 		return [
 			'id' => $conversation->getId(),
 			'title' => $conversation->getTitle(),
 			'created' => $conversation->getCreated()->format(DATE_ATOM),
 			'updated' => $conversation->getUpdated()->format(DATE_ATOM),
-			'model' => $conversation->getModel(),
-			'effort' => $conversation->getEffort(),
+			'model' => $modelChoice['model'] ?? null,
+			'effort' => $modelChoice['effort'] ?? null,
 			'rating' => $conversation->getRating(),
 			'ratingComment' => $conversation->getRatingComment(),
 		];

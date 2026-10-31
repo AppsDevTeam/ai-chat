@@ -43,14 +43,6 @@ trait ConversationTrait
 	#[Description('Date and time of the last update to the conversation (e.g. a new message was added).')]
 	protected \DateTimeImmutable $updated;
 
-	#[ORM\Column(length: 64, nullable: true)]
-	#[Description('Claude model ID chosen for the conversation (e.g. claude-opus-5-5); null means the model of the agent.')]
-	protected ?string $model = null;
-
-	#[ORM\Column(length: 16, nullable: true)]
-	#[Description('Thinking effort level chosen for the conversation (e.g. medium, high, max); null means the model default.')]
-	protected ?string $effort = null;
-
 	#[ORM\Column(type: 'smallint', nullable: true)]
 	#[Description('User rating of the conversation: 1 = helpful (thumbs up), -1 = not helpful (thumbs down), null = not rated.')]
 	protected ?int $rating = null;
@@ -116,28 +108,6 @@ trait ConversationTrait
 	public function setUpdated(\DateTimeImmutable $updated): static
 	{
 		$this->updated = $updated;
-		return $this;
-	}
-
-	public function getModel(): ?string
-	{
-		return $this->model;
-	}
-
-	public function setModel(?string $model): static
-	{
-		$this->model = $model;
-		return $this;
-	}
-
-	public function getEffort(): ?string
-	{
-		return $this->effort;
-	}
-
-	public function setEffort(?string $effort): static
-	{
-		$this->effort = $effort;
 		return $this;
 	}
 

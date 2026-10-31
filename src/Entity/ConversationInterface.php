@@ -40,16 +40,6 @@ interface ConversationInterface
 
 	public function setUpdated(\DateTimeImmutable $updated): static;
 
-	/** Model chosen for the conversation; null = the model of the agent. */
-	public function getModel(): ?string;
-
-	public function setModel(?string $model): static;
-
-	/** Thinking effort chosen for the conversation; null = the model default. */
-	public function getEffort(): ?string;
-
-	public function setEffort(?string $effort): static;
-
 	/** {@see self::RATING_UP}, {@see self::RATING_DOWN} or null when not rated. */
 	public function getRating(): ?int;
 

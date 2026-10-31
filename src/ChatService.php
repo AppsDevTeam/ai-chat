@@ -188,23 +188,31 @@ class ChatService
 	}
 
 	/**
-	 * The model a conversation runs on can be switched between messages; a session
-	 * cannot switch models, so the next turn starts a new one, seeded with the
-	 * transcript ({@see buildHistory()}).
+	 * The model and effort the conversation runs on - those of its latest message;
+	 * null for a conversation without messages. Every message stores the choice it
+	 * was sent or answered with, the conversation itself keeps none. The model can
+	 * be switched between messages; a session cannot switch models, so the next turn
+	 * starts a new one, seeded with the transcript ({@see buildHistory()}).
+	 *
+	 * @return array{model: string|null, effort: string|null}|null
 	 */
-	private function hasMessages(ConversationInterface $conversation): bool
+	public function getModelChoice(ConversationInterface $conversation): ?array
 	{
 		if ($conversation->getId() === null) {
-			return false;
+			return null;
 		}
 
-		return (int) $this->em->createQueryBuilder()
-			->select('COUNT(m)')
+		$row = $this->em->createQueryBuilder()
+			->select('m.model, m.effort')
 			->from($this->options->messageClass, 'm')
 			->where('m.' . $this->options->conversationField . ' = :conversation')
 			->setParameter('conversation', $conversation)
+			->orderBy('m.' . $this->messageIdField(), 'DESC')
+			->setMaxResults(1)
 			->getQuery()
-			->getSingleScalarResult() > 0;
+			->getOneOrNullResult();
+
+		return $row !== null ? ['model' => $row['model'], 'effort' => $row['effort']] : null;
 	}
 
 	// -- Messages --------------------------------------------------------------
@@ -281,7 +289,8 @@ class ChatService
 			->getOneOrNullResult();
 
 		$used = (int) ($row['tokensInput'] ?? 0);
-		$window = $this->options->modelSelection->getContextWindow($conversation->getModel(), $this->options->contextWindowTokens);
+		$choice = $this->getModelChoice($conversation);
+		$window = $this->options->modelSelection->getContextWindow($choice['model'] ?? null, $this->options->contextWindowTokens);
 
 		$usage = [
 			'used' => $used,
@@ -290,8 +299,8 @@ class ChatService
 		];
 
 		if ($used > 0 && $this->options->modelSelection->isEnabled()) {
-			$usage['model'] = $conversation->getModel();
-			$usage['effort'] = $conversation->getEffort();
+			$usage['model'] = $choice['model'] ?? null;
+			$usage['effort'] = $choice['effort'] ?? null;
 			$usage['historyTokens'] = $this->estimateNewSessionTokens($conversation);
 		}
 
@@ -477,24 +486,20 @@ class ChatService
 		$this->checkRateLimit($sender ?? $this->getOwner($conversation));
 
 		// Validated before the uploads, stored only once nothing can fail anymore.
-		$hasMessages = $this->hasMessages($conversation);
-		$modelChoice = !$hasMessages || ($model ?? '') !== '' || ($effort ?? '') !== ''
+		$current = $this->getModelChoice($conversation);
+		$modelChoice = $current === null || ($model ?? '') !== '' || ($effort ?? '') !== ''
 			? $this->options->modelSelection->resolve($model, $effort)
-			: null;
+			: $current;
 
 		$attachments = $this->uploadAttachments($uploads);
 
-		if ($modelChoice !== null && ($modelChoice['model'] !== $conversation->getModel() || $modelChoice['effort'] !== $conversation->getEffort())) {
-			$conversation->setModel($modelChoice['model']);
-			$conversation->setEffort($modelChoice['effort']);
-			if ($hasMessages) {
-				// The session runs on the old model; the next turn starts a new one.
-				$conversation->setSessionId(null);
-			}
+		if ($current !== null && ($modelChoice['model'] !== $current['model'] || $modelChoice['effort'] !== $current['effort'])) {
+			// The session runs on the old model; the next turn starts a new one.
+			$conversation->setSessionId(null);
 		}
 
 		// The transcript is kept on our side too - history does not depend on the session.
-		$message = $this->addMessage($conversation, $userMessage, MessageInterface::AUTHOR_USER, attachments: $attachments ?: null);
+		$message = $this->addMessage($conversation, $userMessage, MessageInterface::AUTHOR_USER, attachments: $attachments ?: null, modelChoice: $modelChoice);
 		if ($sender !== null) {
 			$this->em->getClassMetadata($this->options->messageClass)->setFieldValue($message, $this->options->senderField, $sender);
 		}
@@ -576,6 +581,7 @@ class ChatService
 			$this->piiCheckListener?->checked($conversation, $pseudonymized);
 		}
 
+		$modelChoice = $this->getModelChoice($conversation);
 		$result = $this->getRunner()->run(
 			$conversation,
 			$pseudonymized?->forAi ?? $userMessage,
@@ -587,6 +593,8 @@ class ChatService
 				$attachments,
 			),
 			fn(): string => $this->buildHistoryForAi($conversation),
+			$modelChoice['model'] ?? null,
+			$modelChoice['effort'] ?? null,
 		);
 
 		// Last line of defence: redact direct identifiers from the reply, including
@@ -677,6 +685,7 @@ class ChatService
 	/**
 	 * @param list<array<string, mixed>>|null $toolData
 	 * @param list<array{fileId: string, mediaType: string, filename: string, size: int}>|null $attachments
+	 * @param array{model: string|null, effort: string|null}|null $modelChoice null = that of the latest message
 	 */
 	protected function addMessage(
 		ConversationInterface $conversation,
@@ -687,15 +696,18 @@ class ChatService
 		?int $tokensOutput = null,
 		bool $error = false,
 		?array $attachments = null,
+		?array $modelChoice = null,
 	): MessageInterface {
 		$class = $this->options->messageClass;
+		// A reply runs on the choice of the message it answers - the latest one.
+		$modelChoice ??= $this->getModelChoice($conversation);
 
 		$message = (new $class())
 			->setConversation($conversation)
 			->setContent($content)
 			->setAuthor($author)
-			->setModel($conversation->getModel())
-			->setEffort($conversation->getEffort())
+			->setModel($modelChoice['model'] ?? null)
+			->setEffort($modelChoice['effort'] ?? null)
 			->setToolData($toolData)
 			->setAttachments($attachments)
 			->setTokensInput($tokensInput)

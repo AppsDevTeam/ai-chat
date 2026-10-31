@@ -357,7 +357,7 @@ export class AiChat {
 	}
 
 	/**
-	 * An open conversation shows the model it runs on (the default for one that ran
+	 * An open conversation shows the model of its latest message (the default for one that ran
 	 * on the agent model), a new one the user's last choice.
 	 */
 	setModelChoice(conversation) {
