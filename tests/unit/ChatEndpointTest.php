@@ -94,9 +94,22 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		];
 
 		$this->assertSame([
-			['tool_result' => ['type' => 'chart', 'chart_type' => 'bar']],
-			['tool_result' => ['type' => 'table', 'columns' => ['a']]],
+			['tool_result' => ['type' => 'chart', 'chart_type' => 'bar', 'title' => '', 'labels' => [], 'datasets' => []]],
+			['tool_result' => ['type' => 'table', 'columns' => ['a'], 'title' => '', 'headers' => [], 'rows' => []]],
 			['messageId' => 5, 'tool_result' => ['type' => 'export', 'title' => 'C', 'filename' => 'c.csv', 'token' => 'tok']],
+		], $this->env->endpoint->clientToolData($toolData, 5));
+	}
+
+	public function testStoredStringifiedTableRowsAreDecoded(): void
+	{
+		$toolData = [[
+			'tool_name' => 'render_table',
+			'tool_input' => [],
+			'tool_result' => ['type' => 'table', 'title' => 'T', 'headers' => ['A', 'B'], 'rows' => '[["x", 1], ["y", 2]]'],
+		]];
+
+		$this->assertSame([
+			['tool_result' => ['type' => 'table', 'title' => 'T', 'headers' => ['A', 'B'], 'rows' => [['x', 1], ['y', 2]]]],
 		], $this->env->endpoint->clientToolData($toolData, 5));
 	}
 
@@ -137,5 +150,64 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 
 		$this->assertSame('Call [PHONE_1]', $this->env->endpoint->clientMessage($message)['sent_content']);
 		$this->assertNull($this->env->endpoint->clientMessage($message->setError(true))['sent_content']);
+	}
+
+	public function testRateReturnsTheConversationWithItsRating(): void
+	{
+		$owner = $this->env->owner();
+		$conversationId = $this->env->endpoint->send($owner, null, 'Hi')['conversation']['id'];
+
+		$response = $this->env->endpoint->rate($owner, $conversationId, 1, 'Spot on');
+
+		$this->assertTrue($response['success']);
+		$this->assertSame(1, $response['conversation']['rating']);
+		$this->assertSame('Spot on', $response['conversation']['ratingComment']);
+		$this->assertSame(1, $this->env->endpoint->load($owner, $conversationId)['conversation']['rating']);
+	}
+
+	public function testForeignConversationCannotBeRated(): void
+	{
+		$alice = $this->env->owner();
+		$conversationId = $this->env->endpoint->send($alice, null, 'Hi')['conversation']['id'];
+
+		$response = $this->env->endpoint->rate($this->env->owner(), $conversationId, -1);
+
+		$this->assertFalse($response['success']);
+		$this->assertNull($this->env->endpoint->load($alice, $conversationId)['conversation']['rating']);
+	}
+
+	public function testSenderAndAccessFlags(): void
+	{
+		$env = new ChatTestEnvironment(new \ADT\AiChat\ChatOptions(
+			\ADT\AiChat\Tests\Support\Entity\TestConversation::class,
+			TestMessage::class,
+			ownerField: 'owner',
+			senderField: 'sender',
+		));
+		$env->endpoint->setSenderFormatter(static fn($sender): string => 'User ' . $sender->id);
+		$alice = $env->owner();
+		$bob = $env->owner();
+
+		$sent = $env->endpoint->send($alice, null, 'Hi');
+		$conversationId = $sent['conversation']['id'];
+		$this->assertSame(['name' => 'User ' . $alice->id, 'self' => true], $sent['message']['sender']);
+
+		$env->scriptReply('Hello');
+		$env->chat->processQueuedMessage($conversationId, 'Hi');
+
+		// Bob continues Alice's conversation: he writes, but does not manage it.
+		$continued = $env->endpoint->send($alice, $conversationId, 'More', sender: $bob);
+		$this->assertTrue($continued['success']);
+		$this->assertTrue($continued['message']['sender']['self']);
+
+		$load = $env->endpoint->load($alice, $conversationId, false, false, $bob);
+		$this->assertFalse($load['readOnly']);
+		$this->assertFalse($load['canManage']);
+		$this->assertSame(['name' => 'User ' . $alice->id, 'self' => false], $load['messages'][0]['sender']);
+		$this->assertNull($load['messages'][1]['sender']);
+		$this->assertSame(['name' => 'User ' . $bob->id, 'self' => true], $load['messages'][2]['sender']);
+
+		$this->assertTrue($env->endpoint->conversations($alice)['canManage']);
+		$this->assertFalse($env->endpoint->conversations($alice, true)['canManage']);
 	}
 }

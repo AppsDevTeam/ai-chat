@@ -6,12 +6,14 @@ use ADT\AiChat\AttachmentPolicy;
 use ADT\AiChat\AttachmentUpload;
 use ADT\AiChat\ChatOptions;
 use ADT\AiChat\Entity\MessageInterface;
+use ADT\AiChat\Entity\ConversationInterface;
 use ADT\AiChat\Exception\AiChatException;
 use ADT\AiChat\Pseudonymization\OpenAiCompatiblePiiDetector;
 use ADT\AiChat\Pseudonymization\PiiCheckUnavailableException;
 use ADT\AiChat\Pseudonymization\PiiDetector;
 use ADT\AiChat\Pseudonymization\Pseudonymizer;
 use ADT\AiChat\Pseudonymization\PseudonymizedText;
+use ADT\AiChat\ModelSelection;
 use ADT\AiChat\Tests\Support\ChatTestEnvironment;
 use ADT\AiChat\Tests\Support\Entity\TestConversation;
 use ADT\AiChat\Tests\Support\Entity\TestMessage;
@@ -145,6 +147,7 @@ class ChatServiceTest extends \Codeception\Test\Unit
 			TestMessage::class,
 			ownerField: 'owner',
 			rateLimitPerMinute: 2,
+			pendingTurnSeconds: 0,
 		));
 		$owner = $env->owner();
 		$first = $env->chat->createConversation($owner);
@@ -313,6 +316,25 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->assertSame('unavailable', $env->piiCheckListener->events[0][0]);
 	}
 
+	public function testTheTranscriptForANewSessionIsPseudonymizedToo(): void
+	{
+		$env = $this->pseudonymizingEnvironment();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->scriptReply('Calling [PHONE_1].');
+		$env->chat->enqueueMessage($conversation, 'Call 777 111 222');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Call 777 111 222');
+
+		// An expired session - the next turn sends the transcript to a new one
+		$conversation->setSessionId(null);
+		$env->scriptReply('Done');
+		$env->chat->enqueueMessage($conversation, 'Thanks');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Thanks');
+
+		$history = end($env->client->sentEvents)[0]['content'][0]['text'];
+		$this->assertStringContainsString("User: Call [PHONE_1]\n\nAssistant: Calling [PHONE_1].", $history);
+		$this->assertStringNotContainsString('777 111 222', json_encode($env->client->sentEvents));
+	}
+
 	private function pseudonymizingEnvironment(?PiiDetector $detector = null): ChatTestEnvironment
 	{
 		$resolver = new FakeSubjectResolver(subjects: ['jane@example.test' => 5], labels: [5 => 'Jane Doe']);
@@ -320,5 +342,273 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		return new ChatTestEnvironment(
 			pseudonymizer: static fn(EntityManager $em): Pseudonymizer => new Pseudonymizer($em, TestPseudonym::class, $detector, $resolver),
 		);
+	}
+
+	public function testModelChoiceIsStoredAndSentAsSessionOverride(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'max');
+		$env->scriptReply('Hello');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$this->assertSame('claude-opus-5-5', $conversation->getModel());
+		$this->assertSame('max', $conversation->getEffort());
+		$this->assertSame([['id' => 'claude-opus-5-5', 'effort' => 'max']], $env->client->createdSessionModels);
+	}
+
+	public function testModelChoiceFallsBackToTheDefaults(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi');
+
+		$this->assertSame('claude-sonnet-5-5', $conversation->getModel());
+		$this->assertSame('high', $conversation->getEffort());
+	}
+
+	public function testTheWidgetGetsTheContextWindowOfEachModel(): void
+	{
+		$selection = new ModelSelection([
+			'claude-opus-5-5' => ['label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
+			'claude-haiku' => ['label' => 'Haiku'],
+		]);
+
+		$this->assertSame([
+			['id' => 'claude-opus-5-5', 'label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
+			['id' => 'claude-haiku', 'label' => 'Haiku', 'contextWindowTokens' => null],
+		], $selection->toClient()['models']);
+	}
+
+	public function testModelCanBeSwitchedWithinAConversation(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'medium');
+		$env->scriptReply('Hello');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+		$this->assertSame('sesn_1', $conversation->getSessionId());
+
+		$env->chat->enqueueMessage($conversation, 'Again', [], 'claude-sonnet-5-5', 'max');
+
+		// The session runs on the old model - the next turn starts a new one.
+		$this->assertSame('claude-sonnet-5-5', $conversation->getModel());
+		$this->assertSame('max', $conversation->getEffort());
+		$this->assertNull($conversation->getSessionId());
+
+		$env->scriptReply('Hello again');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Again');
+
+		$this->assertSame([['id' => 'claude-opus-5-5', 'effort' => 'medium'], ['id' => 'claude-sonnet-5-5', 'effort' => 'max']], $env->client->createdSessionModels);
+
+		// The new session got the earlier transcript ahead of the message.
+		$content = end($env->client->sentEvents)[0]['content'];
+		$this->assertCount(2, $content);
+		$this->assertStringContainsString("<conversation_history>\nUser: Hi\n\nAssistant: Hello\n</conversation_history>", $content[0]['text']);
+		$this->assertSame(['type' => 'text', 'text' => 'Again'], $content[1]);
+
+		$this->assertSame(
+			[['user', 'claude-opus-5-5', 'medium'], ['ai', 'claude-opus-5-5', 'medium'], ['user', 'claude-sonnet-5-5', 'max'], ['ai', 'claude-sonnet-5-5', 'max']],
+			array_map(static fn($m): array => [$m->getAuthor(), $m->getModel(), $m->getEffort()], $env->chat->getMessages($conversation)),
+		);
+	}
+
+	public function testUnchangedModelKeepsTheSession(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'medium');
+		$env->scriptReply('Hello');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		// The same choice, and no choice at all, keep the model and the session.
+		$env->chat->enqueueMessage($conversation, 'Again', [], 'claude-opus-5-5', 'medium');
+		$env->scriptReply('Hello again');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Again');
+		$env->chat->enqueueMessage($conversation, 'Once more');
+
+		$this->assertSame('claude-opus-5-5', $conversation->getModel());
+		$this->assertSame('medium', $conversation->getEffort());
+		$this->assertSame('sesn_1', $conversation->getSessionId());
+		$this->assertCount(1, $env->client->createdSessionModels);
+	}
+
+	public function testHistorySummarizesToolCallsAndLeavesOutOldMessages(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Revenue?');
+		$env->client->frames = [
+			[
+				['id' => 'evt_tool', 'type' => 'agent.custom_tool_use', 'name' => 'render_table', 'input' => ['title' => 'Revenue', 'headers' => ['Branch', 'CZK'], 'rows' => '[["Praha", 100]]']],
+				['id' => 'evt_req', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'requires_action']],
+			],
+			[
+				['id' => 'evt_msg', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Here it is']]],
+				['id' => 'evt_idle', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+			],
+		];
+		$env->chat->processQueuedMessage($conversation->getId(), 'Revenue?');
+		$env->chat->enqueueMessage($conversation, 'And now?');
+
+		$history = $env->chat->buildHistory($conversation);
+		$this->assertStringContainsString("User: Revenue?\n\n[render_table] Revenue\nBranch | CZK\nPraha | 100\nAssistant: Here it is\n</conversation_history>", $history);
+		$this->assertStringNotContainsString('And now?', $history);
+	}
+
+	public function testModelOrEffortNotOfferedIsRefused(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		foreach ([['claude-haiku-4-5', 'high', 'aiChat.error.unknownModel'], ['claude-opus-5-5', 'xhigh', 'aiChat.error.unknownEffort']] as [$model, $effort, $key]) {
+			try {
+				$env->chat->enqueueMessage($conversation, 'Hi', [], $model, $effort);
+				$this->fail('A model or effort that is not offered must be refused.');
+			} catch (AiChatException $e) {
+				$this->assertSame($key, $e->getTranslationKey());
+			}
+		}
+
+		$this->assertNull($conversation->getModel());
+		$this->assertSame([], $env->dispatcher->dispatched);
+	}
+
+	public function testWithoutModelSelectionTheSessionRunsOnTheAgentModel(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+
+		$this->env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'max');
+		$this->env->scriptReply('Hello');
+		$this->env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$this->assertNull($conversation->getModel());
+		$this->assertSame([null], $this->env->client->createdSessionModels);
+	}
+
+	public function testContextUsageUsesTheWindowOfTheConversationModel(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5');
+		$env->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Hello']]],
+			['id' => 'e2', 'type' => 'span.model_request_end', 'model_usage' => ['input_tokens' => 100000, 'output_tokens' => 7]],
+			['id' => 'e3', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$this->assertSame([
+			'used' => 100000,
+			'window' => 1000000,
+			'percent' => 10,
+			'model' => 'claude-opus-5-5',
+			'effort' => 'high',
+			// a new session (another model picked in the widget): first input + the transcript
+			'historyTokens' => 100000 + (int) ceil(mb_strlen($env->chat->buildHistory($conversation)) / 3),
+		], $env->chat->getContextUsage($conversation));
+		$this->assertStringContainsString('Assistant: Hello', $env->chat->buildHistory($conversation));
+	}
+
+	public function testRatingIsStoredAndCleared(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+
+		$this->env->chat->rateConversation($conversation, ConversationInterface::RATING_DOWN, '  Wrong numbers  ');
+
+		$this->assertSame(-1, $conversation->getRating());
+		$this->assertSame('Wrong numbers', $conversation->getRatingComment());
+		$this->assertNotNull($conversation->getRated());
+
+		$this->env->chat->rateConversation($conversation, ConversationInterface::RATING_UP, '');
+		$this->assertSame(1, $conversation->getRating());
+		$this->assertNull($conversation->getRatingComment());
+
+		$this->env->chat->rateConversation($conversation, null, 'ignored');
+		$this->assertNull($conversation->getRating());
+		$this->assertNull($conversation->getRatingComment());
+		$this->assertNull($conversation->getRated());
+	}
+
+	public function testInvalidRatingIsRefused(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+
+		try {
+			$this->env->chat->rateConversation($conversation, 5);
+			$this->fail('A rating other than 1 / -1 must be refused.');
+		} catch (AiChatException $e) {
+			$this->assertSame('aiChat.error.invalidRating', $e->getTranslationKey());
+		}
+
+		$this->assertNull($conversation->getRating());
+	}
+
+	private function withModelSelection(): ChatTestEnvironment
+	{
+		return new ChatTestEnvironment(new ChatOptions(
+			TestConversation::class,
+			TestMessage::class,
+			ownerField: 'owner',
+			modelSelection: new ModelSelection([
+				'claude-sonnet-5-5' => ['label' => 'Sonnet 5.5', 'contextWindowTokens' => 1000000],
+				'claude-opus-5-5' => ['label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
+			]),
+		));
+	}
+
+	public function testAMessageWaitingForItsReplyBlocksTheNextOne(): void
+	{
+		$env = new ChatTestEnvironment();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->chat->enqueueMessage($conversation, 'one');
+
+		try {
+			$env->chat->enqueueMessage($conversation, 'two');
+			$this->fail('A second turn must not start in the same session.');
+		} catch (AiChatException $e) {
+			$this->assertSame('aiChat.error.turnPending', $e->getTranslationKey());
+		}
+
+		$env->scriptReply('Done');
+		$env->chat->processQueuedMessage($conversation->getId(), 'one');
+		$env->chat->enqueueMessage($conversation, 'two');
+		$this->assertCount(2, $env->dispatcher->dispatched);
+	}
+
+	public function testAnotherUserWritesIntoTheConversation(): void
+	{
+		$env = new ChatTestEnvironment(new ChatOptions(
+			TestConversation::class,
+			TestMessage::class,
+			ownerField: 'owner',
+			rateLimitPerMinute: 1,
+			senderField: 'sender',
+			pendingTurnSeconds: 0,
+		));
+		$alice = $env->owner();
+		$bob = $env->owner();
+		$conversation = $env->chat->createConversation($alice);
+
+		$own = $env->chat->enqueueMessage($conversation, 'mine');
+		$foreign = $env->chat->enqueueMessage($conversation, 'continuing', sender: $bob);
+
+		$this->assertSame($alice, $env->chat->getSender($own));
+		$this->assertSame($bob, $env->chat->getSender($foreign));
+		$this->assertTrue($env->chat->isSameUser($bob, $bob->id));
+		$this->assertFalse($env->chat->isSameUser($alice, $bob));
+
+		// The rate limit counts per sender - Alice is at her limit, Bob's message did not count for her.
+		try {
+			$env->chat->enqueueMessage($conversation, 'again');
+			$this->fail('Alice is over her rate limit.');
+		} catch (AiChatException $e) {
+			$this->assertSame('aiChat.error.rateLimitMinute', $e->getTranslationKey());
+		}
 	}
 }

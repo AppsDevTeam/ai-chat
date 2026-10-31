@@ -118,7 +118,7 @@ class ToolHandler implements ToolExecutor
 								'type' => 'array',
 								'items' => ['type' => 'string'],
 							],
-							'description' => 'Table rows, each row is an array of cell values.',
+							'description' => 'Table rows, each row is an array of cell values. Pass a JSON array, not a JSON-encoded string.',
 						],
 					],
 					'required' => ['headers', 'rows'],
@@ -250,13 +250,13 @@ class ToolHandler implements ToolExecutor
 	 */
 	private function handleRenderChart(array $input): array
 	{
-		return [
+		return self::normalizeRenderResult([
 			'type' => 'chart',
 			'chart_type' => $input['chart_type'] ?? 'bar',
 			'title' => $input['title'] ?? '',
 			'labels' => $input['labels'] ?? [],
 			'datasets' => $input['datasets'] ?? [],
-		];
+		]);
 	}
 
 	/**
@@ -265,11 +265,60 @@ class ToolHandler implements ToolExecutor
 	 */
 	private function handleRenderTable(array $input): array
 	{
-		return [
+		return self::normalizeRenderResult([
 			'type' => 'table',
 			'title' => $input['title'] ?? '',
 			'headers' => $input['headers'] ?? [],
 			'rows' => $input['rows'] ?? [],
-		];
+		]);
+	}
+
+	/**
+	 * The model sometimes passes an array argument as a JSON-encoded string
+	 * ("rows": "[[...]]"); the widget would then iterate it character by character.
+	 * Decodes such strings and drops values of the wrong shape. Also applied to
+	 * already persisted results before they go to the browser.
+	 *
+	 * @param array<string, mixed> $result
+	 * @return array<string, mixed>
+	 */
+	public static function normalizeRenderResult(array $result): array
+	{
+		$list = static function (mixed $value): array {
+			if (is_string($value)) {
+				$value = json_decode($value, true);
+			}
+
+			return is_array($value) ? array_values($value) : [];
+		};
+		$cell = static fn(mixed $value): mixed => is_scalar($value) || $value === null ? $value : json_encode($value, JSON_UNESCAPED_UNICODE);
+
+		$result['title'] = is_scalar($result['title'] ?? null) ? (string) $result['title'] : '';
+
+		if (($result['type'] ?? null) === 'table') {
+			$result['headers'] = array_map($cell, $list($result['headers'] ?? null));
+			$result['rows'] = array_map(
+				static fn(mixed $row): array => array_map($cell, $list($row)),
+				$list($result['rows'] ?? null),
+			);
+		} elseif (($result['type'] ?? null) === 'chart') {
+			$result['chart_type'] = is_string($result['chart_type'] ?? null) ? $result['chart_type'] : 'bar';
+			$result['labels'] = array_map($cell, $list($result['labels'] ?? null));
+			$datasets = [];
+			foreach ($list($result['datasets'] ?? null) as $dataset) {
+				if (is_string($dataset)) {
+					$dataset = json_decode($dataset, true);
+				}
+				if (!is_array($dataset)) {
+					continue;
+				}
+				$dataset['label'] = is_scalar($dataset['label'] ?? null) ? (string) $dataset['label'] : '';
+				$dataset['data'] = array_map($cell, $list($dataset['data'] ?? null));
+				$datasets[] = $dataset;
+			}
+			$result['datasets'] = $datasets;
+		}
+
+		return $result;
 	}
 }

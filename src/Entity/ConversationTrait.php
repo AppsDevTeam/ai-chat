@@ -16,7 +16,7 @@ use Doctrine\ORM\Mapping as ORM;
  * The columns carry safe anonymization defaults: the title comes from the first
  * user message (free text - may contain anything the user typed) and the session
  * id is an access token to the server-side conversation, so neither may appear
- * readable in the anonymized views.
+ * readable in the anonymized views. The rating comment is free text too.
  */
 trait ConversationTrait
 {
@@ -42,6 +42,27 @@ trait ConversationTrait
 	#[ORM\Column]
 	#[Description('Date and time of the last update to the conversation (e.g. a new message was added).')]
 	protected \DateTimeImmutable $updated;
+
+	#[ORM\Column(length: 64, nullable: true)]
+	#[Description('Claude model ID chosen for the conversation (e.g. claude-opus-5-5); null means the model of the agent.')]
+	protected ?string $model = null;
+
+	#[ORM\Column(length: 16, nullable: true)]
+	#[Description('Thinking effort level chosen for the conversation (e.g. medium, high, max); null means the model default.')]
+	protected ?string $effort = null;
+
+	#[ORM\Column(type: 'smallint', nullable: true)]
+	#[Description('User rating of the conversation: 1 = helpful (thumbs up), -1 = not helpful (thumbs down), null = not rated.')]
+	protected ?int $rating = null;
+
+	#[ORM\Column(type: 'text', nullable: true)]
+	#[Anonymize(AnonymizationType::FREE_TEXT)]
+	#[Description('Optional comment the user added to the rating of the conversation.')]
+	protected ?string $ratingComment = null;
+
+	#[ORM\Column(nullable: true)]
+	#[Description('Date and time when the user last rated the conversation; null when not rated.')]
+	protected ?\DateTimeImmutable $rated = null;
 
 	public function getTitle(): string
 	{
@@ -95,6 +116,61 @@ trait ConversationTrait
 	public function setUpdated(\DateTimeImmutable $updated): static
 	{
 		$this->updated = $updated;
+		return $this;
+	}
+
+	public function getModel(): ?string
+	{
+		return $this->model;
+	}
+
+	public function setModel(?string $model): static
+	{
+		$this->model = $model;
+		return $this;
+	}
+
+	public function getEffort(): ?string
+	{
+		return $this->effort;
+	}
+
+	public function setEffort(?string $effort): static
+	{
+		$this->effort = $effort;
+		return $this;
+	}
+
+	public function getRating(): ?int
+	{
+		return $this->rating;
+	}
+
+	public function setRating(?int $rating): static
+	{
+		$this->rating = $rating;
+		return $this;
+	}
+
+	public function getRatingComment(): ?string
+	{
+		return $this->ratingComment;
+	}
+
+	public function setRatingComment(?string $ratingComment): static
+	{
+		$this->ratingComment = $ratingComment;
+		return $this;
+	}
+
+	public function getRated(): ?\DateTimeImmutable
+	{
+		return $this->rated;
+	}
+
+	public function setRated(?\DateTimeImmutable $rated): static
+	{
+		$this->rated = $rated;
 		return $this;
 	}
 }

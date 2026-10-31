@@ -73,6 +73,30 @@ class ToolHandlerTest extends \Codeception\Test\Unit
 		}
 	}
 
+	public function testRenderTableDecodesStringifiedArguments(): void
+	{
+		$result = $this->handler()->handleToolCall('render_table', [
+			'title' => 'Přehled',
+			'headers' => '["Specialista", "Tržba"]',
+			'rows' => '[["Jakub Polansk\\u00fd", "1 420 280"], "nonsense", [["nested"], null]]',
+		]);
+
+		$this->assertSame(['Specialista', 'Tržba'], $result['headers']);
+		$this->assertSame([['Jakub Polanský', '1 420 280'], [], ['["nested"]', null]], $result['rows']);
+	}
+
+	public function testRenderChartDecodesStringifiedArguments(): void
+	{
+		$result = $this->handler()->handleToolCall('render_chart', [
+			'chart_type' => 'bar',
+			'labels' => '["2025", "2026"]',
+			'datasets' => '[{"label": "Tržba", "data": "[1, 2]"}, 5]',
+		]);
+
+		$this->assertSame(['2025', '2026'], $result['labels']);
+		$this->assertSame([['label' => 'Tržba', 'data' => [1, 2]]], $result['datasets']);
+	}
+
 	public function testUnknownToolIsAnError(): void
 	{
 		$this->assertArrayHasKey('error', $this->handler()->handleToolCall('nope', []));

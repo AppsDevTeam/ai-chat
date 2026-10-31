@@ -9,6 +9,7 @@ use ADT\AiChat\ChatService;
 use ADT\AiChat\Entity\ConversationInterface;
 use ADT\AiChat\Entity\MessageInterface;
 use ADT\AiChat\Exception\AiChatException;
+use ADT\AiChat\ToolHandler;
 use ADT\DoctrineAnonymization\Exception\QueryNotAllowedException;
 use ADT\DoctrineAnonymization\ReadOnlyQueryExecutor;
 use Psr\Log\LoggerInterface;
@@ -26,12 +27,21 @@ use Psr\Log\LoggerInterface;
  * privileged role) is the caller's job - and so is refusing send/delete in such a
  * read-only view.
  *
+ * Two flags tell the widget what the viewer may do: `readOnly` hides the input,
+ * `canManage` (default: not read-only) allows rating and deleting. A colleague who
+ * may continue someone's conversation gets readOnly false + canManage false, and
+ * with {@see \ADT\AiChat\ChatOptions::$senderField} the user messages carry
+ * `sender: {name, self}` ({@see setSenderFormatter()}).
+ *
  * What reaches the browser is whitelisted ({@see clientToolData()}): only
  * displayable results and export tokens. SQL, schema and table names stay on the
  * server.
  */
 class ChatEndpoint
 {
+	/** @var (callable(mixed): string)|null */
+	private $senderFormatter = null;
+
 	public function __construct(
 		private readonly ChatService $chat,
 		private readonly ReadOnlyQueryExecutor $queryExecutor,
@@ -40,14 +50,27 @@ class ChatEndpoint
 	}
 
 	/**
+	 * The name the widget shows above a user message of another sender. Without it
+	 * a Stringable or scalar sender is cast to string.
+	 *
+	 * @param callable(mixed $sender): string $formatter
+	 */
+	public function setSenderFormatter(callable $formatter): static
+	{
+		$this->senderFormatter = $formatter;
+		return $this;
+	}
+
+	/**
 	 * @return array<string, mixed>
 	 */
-	public function conversations(object|int|string $owner, bool $readOnly = false): array
+	public function conversations(object|int|string $owner, bool $readOnly = false, ?bool $canManage = null): array
 	{
 		return $this->guard(fn(): array => [
 			'success' => true,
 			'conversations' => array_map($this->clientConversation(...), $this->chat->getConversations($owner)),
 			'readOnly' => $readOnly,
+			'canManage' => $canManage ?? !$readOnly,
 		]);
 	}
 
@@ -63,18 +86,26 @@ class ChatEndpoint
 	}
 
 	/**
+	 * $viewer (the signed-in user) marks the messages they wrote as `sender.self`.
+	 *
 	 * @return array<string, mixed>
 	 */
-	public function load(object|int|string $owner, int|string $conversationId, bool $readOnly = false): array
-	{
-		return $this->guard(function () use ($owner, $conversationId, $readOnly): array {
+	public function load(
+		object|int|string $owner,
+		int|string $conversationId,
+		bool $readOnly = false,
+		?bool $canManage = null,
+		object|int|string|null $viewer = null,
+	): array {
+		return $this->guard(function () use ($owner, $conversationId, $readOnly, $canManage, $viewer): array {
 			$conversation = $this->requireConversation($conversationId, $owner);
 
 			return [
 				'success' => true,
 				'conversation' => $this->clientConversation($conversation),
-				'messages' => array_map($this->clientMessage(...), $this->chat->getMessages($conversation)),
+				'messages' => array_map(fn(MessageInterface $m): array => $this->clientMessage($m, $viewer ?? $owner), $this->chat->getMessages($conversation)),
 				'readOnly' => $readOnly,
+				'canManage' => $canManage ?? !$readOnly,
 				'contextUsage' => $this->chat->getContextUsage($conversation),
 			];
 		});
@@ -85,22 +116,35 @@ class ChatEndpoint
 	 * by {@see poll()} from `lastMessageId` on. Without a conversation id a new
 	 * conversation is started, so the first message needs one request only.
 	 *
+	 * The model and effort (the widget sends them while the conversation has no
+	 * message yet) are validated against {@see \ADT\AiChat\ModelSelection}.
+	 *
+	 * $sender writes into the conversation of $owner (null = the owner itself); a new
+	 * conversation always belongs to $owner.
+	 *
 	 * @param list<AttachmentUpload> $uploads
 	 * @return array<string, mixed>
 	 */
-	public function send(object|int|string $owner, int|string|null $conversationId, string $message, array $uploads = []): array
-	{
-		return $this->guard(function () use ($owner, $conversationId, $message, $uploads): array {
+	public function send(
+		object|int|string $owner,
+		int|string|null $conversationId,
+		string $message,
+		array $uploads = [],
+		?string $model = null,
+		?string $effort = null,
+		object|int|string|null $sender = null,
+	): array {
+		return $this->guard(function () use ($owner, $conversationId, $message, $uploads, $model, $effort, $sender): array {
 			$conversation = $conversationId !== null && $conversationId !== '' && $conversationId !== 0
 				? $this->requireConversation($conversationId, $owner)
 				: $this->chat->createConversation($owner);
 
-			$userMessage = $this->chat->enqueueMessage($conversation, $message, $uploads);
+			$userMessage = $this->chat->enqueueMessage($conversation, $message, $uploads, $model, $effort, $sender);
 
 			return [
 				'success' => true,
 				'queued' => true,
-				'message' => $this->clientMessage($userMessage),
+				'message' => $this->clientMessage($userMessage, $sender ?? $owner),
 				'lastMessageId' => $userMessage->getId(),
 				'conversation' => $this->clientConversation($conversation),
 			];
@@ -113,16 +157,36 @@ class ChatEndpoint
 	 *
 	 * @return array<string, mixed>
 	 */
-	public function poll(object|int|string $owner, int|string $conversationId, int|string $afterId): array
+	public function poll(object|int|string $owner, int|string $conversationId, int|string $afterId, object|int|string|null $viewer = null): array
 	{
-		return $this->guard(function () use ($owner, $conversationId, $afterId): array {
+		return $this->guard(function () use ($owner, $conversationId, $afterId, $viewer): array {
 			$conversation = $this->requireConversation($conversationId, $owner);
 
 			return [
 				'success' => true,
-				'messages' => array_map($this->clientMessage(...), $this->chat->getMessagesAfter($conversation, $afterId)),
+				'messages' => array_map(fn(MessageInterface $m): array => $this->clientMessage($m, $viewer ?? $owner), $this->chat->getMessagesAfter($conversation, $afterId)),
 				'conversation' => $this->clientConversation($conversation),
 				'contextUsage' => $this->chat->getContextUsage($conversation),
+			];
+		});
+	}
+
+	/**
+	 * The owner's rating of the conversation ({@see ConversationInterface::RATING_UP} or
+	 * RATING_DOWN, null clears it) with an optional comment. Refuse it in a read-only
+	 * view - only the owner rates their conversation.
+	 *
+	 * @return array<string, mixed>
+	 */
+	public function rate(object|int|string $owner, int|string $conversationId, ?int $rating, ?string $comment = null): array
+	{
+		return $this->guard(function () use ($owner, $conversationId, $rating, $comment): array {
+			$conversation = $this->requireConversation($conversationId, $owner);
+			$this->chat->rateConversation($conversation, $rating, $comment);
+
+			return [
+				'success' => true,
+				'conversation' => $this->clientConversation($conversation),
 			];
 		});
 	}
@@ -176,7 +240,7 @@ class ChatEndpoint
 	}
 
 	/**
-	 * @return array{id: int|string|null, title: string, created: string, updated: string}
+	 * @return array{id: int|string|null, title: string, created: string, updated: string, model: string|null, effort: string|null, rating: int|null, ratingComment: string|null}
 	 */
 	public function clientConversation(ConversationInterface $conversation): array
 	{
@@ -185,19 +249,31 @@ class ChatEndpoint
 			'title' => $conversation->getTitle(),
 			'created' => $conversation->getCreated()->format(DATE_ATOM),
 			'updated' => $conversation->getUpdated()->format(DATE_ATOM),
+			'model' => $conversation->getModel(),
+			'effort' => $conversation->getEffort(),
+			'rating' => $conversation->getRating(),
+			'ratingComment' => $conversation->getRatingComment(),
 		];
 	}
 
 	/**
-	 * The message in the shape the widget expects.
+	 * The message in the shape the widget expects. A user message stored with a
+	 * sender carries `sender: {name, self}` - self when $viewer wrote it; `model` and
+	 * `effort` are the ones the conversation ran on for the message.
 	 *
 	 * @return array<string, mixed>
 	 */
-	public function clientMessage(MessageInterface $message): array
+	public function clientMessage(MessageInterface $message, object|int|string|null $viewer = null): array
 	{
+		$sender = $this->chat->getSender($message);
+
 		return [
 			'id' => $message->getId(),
 			'author' => $message->getAuthor(),
+			'sender' => $sender !== null ? [
+				'name' => $this->formatSender($sender),
+				'self' => $this->chat->isSameUser($sender, $viewer),
+			] : null,
 			'content' => $message->getContent(),
 			'tool_data' => $this->clientToolData($message->getToolData(), $message->getId()),
 			'attachments' => array_map(static fn(array $attachment): array => [
@@ -205,6 +281,8 @@ class ChatEndpoint
 				'mediaType' => (string) ($attachment['mediaType'] ?? ''),
 				'size' => (int) ($attachment['size'] ?? 0),
 			], $message->getAttachments() ?? []),
+			'model' => $message->getModel(),
+			'effort' => $message->getEffort(),
 			'error' => $message->isError(),
 			// What the AI received instead of the question (anchors), shown above the reply
 			'sent_content' => $message->isError() ? null : $message->getSentContent(),
@@ -229,7 +307,7 @@ class ChatEndpoint
 			$type = $result['type'] ?? null;
 
 			if ($type === 'chart' || $type === 'table') {
-				$out[] = ['tool_result' => $result];
+				$out[] = ['tool_result' => ToolHandler::normalizeRenderResult($result)];
 			} elseif ($type === 'export') {
 				$out[] = [
 					'messageId' => $messageId,
@@ -244,6 +322,15 @@ class ChatEndpoint
 		}
 
 		return $out;
+	}
+
+	private function formatSender(mixed $sender): string
+	{
+		if ($this->senderFormatter !== null) {
+			return ($this->senderFormatter)($sender);
+		}
+
+		return is_scalar($sender) || $sender instanceof \Stringable ? (string) $sender : '';
 	}
 
 	/**

@@ -220,6 +220,43 @@ class AgentTurnRunnerTest extends \Codeception\Test\Unit
 		$this->assertSame('sesn_1', $conversation->getSessionId());
 	}
 
+	public function testHistoryGoesOnlyToANewSession(): void
+	{
+		$this->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Ok']]],
+			['id' => 'e2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+		$this->runner()->run($this->conversation(), 'x', fn() => null, [], fn(): string => 'HISTORY');
+
+		$this->assertSame([['type' => 'text', 'text' => 'HISTORY'], ['type' => 'text', 'text' => 'x']], $this->client->sentEvents[0][0]['content']);
+	}
+
+	public function testExistingSessionGetsNoHistory(): void
+	{
+		$this->client->frames = [[
+			['id' => 'e3', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Ok']]],
+			['id' => 'e4', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+		$this->runner()->run($this->conversation('sesn_existing'), 'y', fn() => null, [], function (): string {
+			$this->fail('An existing session already has the history.');
+		});
+
+		$this->assertSame([['type' => 'text', 'text' => 'y']], end($this->client->sentEvents)[0]['content']);
+	}
+
+	public function testStuckSessionReplacementGetsTheHistory(): void
+	{
+		$this->client->failOnUserMessage = true;
+		$this->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Recovered']]],
+			['id' => 'e2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+
+		$this->runner()->run($this->conversation('sesn_stuck'), 'x', fn() => null, [], fn(): string => 'HISTORY');
+
+		$this->assertSame([['type' => 'text', 'text' => 'HISTORY'], ['type' => 'text', 'text' => 'x']], end($this->client->sentEvents)[0]['content']);
+	}
+
 	public function testFreshSessionFailureIsNotRetried(): void
 	{
 		$this->client->failAllUserMessages = true;

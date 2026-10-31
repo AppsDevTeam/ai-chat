@@ -36,6 +36,8 @@ use Psr\Log\LoggerInterface;
  * With a {@see Pseudonymizer} the user's text goes to the AI with anchors instead
  * of personal data, the stored reply gets the real values back and remembers what
  * the AI received ({@see MessageInterface::getSentContent()}).
+ * With {@see ChatOptions::$senderField} other users may write into a conversation
+ * too: every user message remembers its sender and the rate limit counts per sender.
  */
 class ChatService
 {
@@ -134,11 +136,75 @@ class ChatService
 			->getFieldValue($conversation, $this->options->ownerField);
 	}
 
+	/** Who wrote the user message; null without {@see ChatOptions::$senderField} or for AI replies. */
+	public function getSender(MessageInterface $message): mixed
+	{
+		if ($this->options->senderField === null) {
+			return null;
+		}
+
+		return $this->em->getClassMetadata($this->options->messageClass)
+			->getFieldValue($message, $this->options->senderField);
+	}
+
+	/**
+	 * Do both values stand for the same user? Entities compare by their identifier,
+	 * so an entity equals its proxy or its plain id.
+	 */
+	public function isSameUser(mixed $a, mixed $b): bool
+	{
+		if ($a === null || $b === null) {
+			return false;
+		}
+
+		return $a === $b || $this->userKey($a) === $this->userKey($b);
+	}
+
+	/**
+	 * The user's feedback on the conversation; a null rating clears it together with
+	 * the comment. Rating again overwrites the previous one.
+	 *
+	 * @throws AiChatException
+	 */
+	public function rateConversation(ConversationInterface $conversation, ?int $rating, ?string $comment = null): void
+	{
+		if ($rating !== null && $rating !== ConversationInterface::RATING_UP && $rating !== ConversationInterface::RATING_DOWN) {
+			throw AiChatException::translatable('Invalid rating.', 'aiChat.error.invalidRating');
+		}
+
+		$comment = $comment !== null ? trim($comment) : '';
+
+		$conversation->setRating($rating);
+		$conversation->setRatingComment($rating !== null && $comment !== '' ? mb_substr($comment, 0, $this->options->ratingCommentMaxLength) : null);
+		$conversation->setRated($rating !== null ? new \DateTimeImmutable() : null);
+		$this->em->flush();
+	}
+
 	/** Soft delete - the transcript stays for audits and statistics. */
 	public function deleteConversation(ConversationInterface $conversation): void
 	{
 		$conversation->setDeleted(true);
 		$this->em->flush();
+	}
+
+	/**
+	 * The model a conversation runs on can be switched between messages; a session
+	 * cannot switch models, so the next turn starts a new one, seeded with the
+	 * transcript ({@see buildHistory()}).
+	 */
+	private function hasMessages(ConversationInterface $conversation): bool
+	{
+		if ($conversation->getId() === null) {
+			return false;
+		}
+
+		return (int) $this->em->createQueryBuilder()
+			->select('COUNT(m)')
+			->from($this->options->messageClass, 'm')
+			->where('m.' . $this->options->conversationField . ' = :conversation')
+			->setParameter('conversation', $conversation)
+			->getQuery()
+			->getSingleScalarResult() > 0;
 	}
 
 	// -- Messages --------------------------------------------------------------
@@ -190,7 +256,16 @@ class ChatService
 	 * session context with every request, so the tokensInput of the latest reply
 	 * equals the current window usage.
 	 *
-	 * @return array{used: int, window: int, percent: int}
+	 * The window is the one of the conversation's model ({@see ModelSelection}), or
+	 * {@see ChatOptions::$contextWindowTokens} when it has none.
+	 *
+	 * With model selection it also carries the conversation's model and effort and
+	 * `historyTokens` - an estimate of the context a new session would start with
+	 * (switching the model in the widget drops the session, the transcript follows):
+	 * the input of the first reply (system prompt, tools) plus the transcript. The
+	 * widget measures the gauge against the selected model with it.
+	 *
+	 * @return array{used: int, window: int, percent: int, model?: ?string, effort?: ?string, historyTokens?: int}
 	 */
 	public function getContextUsage(ConversationInterface $conversation): array
 	{
@@ -206,13 +281,160 @@ class ChatService
 			->getOneOrNullResult();
 
 		$used = (int) ($row['tokensInput'] ?? 0);
-		$window = $this->options->contextWindowTokens;
+		$window = $this->options->modelSelection->getContextWindow($conversation->getModel(), $this->options->contextWindowTokens);
 
-		return [
+		$usage = [
 			'used' => $used,
 			'window' => $window,
 			'percent' => $window > 0 ? min(100, (int) round($used / $window * 100)) : 0,
 		];
+
+		if ($used > 0 && $this->options->modelSelection->isEnabled()) {
+			$usage['model'] = $conversation->getModel();
+			$usage['effort'] = $conversation->getEffort();
+			$usage['historyTokens'] = $this->estimateNewSessionTokens($conversation);
+		}
+
+		return $usage;
+	}
+
+	/** Rough token count of a new session: first reply's input + transcript (~3 chars per token). */
+	private function estimateNewSessionTokens(ConversationInterface $conversation): int
+	{
+		$row = $this->em->createQueryBuilder()
+			->select('m.tokensInput')
+			->from($this->options->messageClass, 'm')
+			->where('m.' . $this->options->conversationField . ' = :conversation')
+			->andWhere('m.tokensInput IS NOT NULL')
+			->setParameter('conversation', $conversation)
+			->orderBy('m.' . $this->messageIdField(), 'ASC')
+			->setMaxResults(1)
+			->getQuery()
+			->getOneOrNullResult();
+
+		return (int) ($row['tokensInput'] ?? 0) + (int) ceil(mb_strlen($this->buildHistory($conversation)) / 3);
+	}
+
+	/**
+	 * The transcript before the message being processed, for a new session of an
+	 * existing conversation (a switched model, an expired session) - otherwise the
+	 * session would start without any context. Tool calls are summarized (SQL, the
+	 * rendered tables and charts); beyond {@see ChatOptions::$historyMaxChars} the
+	 * oldest messages are left out. Empty for a conversation without history.
+	 */
+	public function buildHistory(ConversationInterface $conversation): string
+	{
+		$messages = $this->getMessages($conversation);
+
+		// The trailing user message is the one being processed - it is sent as itself.
+		$last = end($messages);
+		if ($last !== false && $last->getAuthor() === MessageInterface::AUTHOR_USER) {
+			array_pop($messages);
+		}
+
+		$parts = [];
+		foreach ($messages as $message) {
+			$part = $message->isError() ? '' : $this->formatHistoryMessage($message);
+			if ($part !== '') {
+				$parts[] = $part;
+			}
+		}
+
+		$kept = [];
+		$length = 0;
+		foreach (array_reverse($parts) as $part) {
+			$length += mb_strlen($part) + 2;
+			if ($length > $this->options->historyMaxChars) {
+				if ($kept === []) {
+					$kept[] = mb_substr($part, 0, $this->options->historyMaxChars) . ' [...]';
+				}
+				break;
+			}
+			$kept[] = $part;
+		}
+
+		if ($kept === []) {
+			return '';
+		}
+
+		$omitted = count($parts) - count($kept);
+
+		return "This conversation continues from an earlier session, possibly on another model. Its transcript follows for context."
+			. " Results of the earlier tool calls are available only as shown - run the queries again when you need the data.\n\n"
+			. "<conversation_history>\n"
+			. ($omitted > 0 ? sprintf("[%d older messages left out]\n\n", $omitted) : '')
+			. implode("\n\n", array_reverse($kept))
+			. "\n</conversation_history>";
+	}
+
+	/**
+	 * The transcript for a new session; with a pseudonymizer it goes through it too -
+	 * the stored messages hold the real values, the values get their existing anchors.
+	 *
+	 * @throws PiiCheckUnavailableException
+	 */
+	private function buildHistoryForAi(ConversationInterface $conversation): string
+	{
+		$history = $this->buildHistory($conversation);
+		if ($history === '' || $this->pseudonymizer === null) {
+			return $history;
+		}
+
+		return $this->pseudonymizer->pseudonymize($conversation, $history)->forAi;
+	}
+
+	private function formatHistoryMessage(MessageInterface $message): string
+	{
+		if ($message->getAuthor() === MessageInterface::AUTHOR_USER) {
+			$files = array_map(static fn(array $a): string => (string) ($a['filename'] ?? ''), $message->getAttachments() ?? []);
+
+			return 'User: ' . $message->getContent() . ($files ? ' [attached files: ' . implode(', ', $files) . ']' : '');
+		}
+
+		$lines = [];
+		foreach ($message->getToolData() ?? [] as $entry) {
+			$name = (string) ($entry['tool_name'] ?? '');
+			$input = (array) ($entry['tool_input'] ?? []);
+			$result = ToolHandler::normalizeRenderResult((array) ($entry['tool_result'] ?? []));
+
+			$line = match ($name) {
+				'execute_sql', 'export_csv' => is_string($input['sql'] ?? null) ? sprintf('[%s] %s', $name, $input['sql']) : '',
+				'render_table' => sprintf("[render_table] %s\n%s", $result['title'] ?? '', self::formatHistoryTable($result['headers'] ?? [], $result['rows'] ?? [])),
+				'render_chart' => sprintf('[render_chart] %s: %s', $result['title'] ?? '', json_encode([
+					'labels' => $result['labels'] ?? [],
+					'datasets' => $result['datasets'] ?? [],
+				], JSON_UNESCAPED_UNICODE)),
+				default => '',
+			};
+			if ($line !== '') {
+				$lines[] = $line;
+			}
+		}
+
+		if ($message->getContent() !== '') {
+			$lines[] = 'Assistant: ' . $message->getContent();
+		}
+
+		return implode("\n", $lines);
+	}
+
+	/**
+	 * @param list<mixed> $headers
+	 * @param list<list<mixed>> $rows
+	 */
+	private static function formatHistoryTable(array $headers, array $rows, int $maxRows = 50): string
+	{
+		$line = static fn(array $cells): string => implode(' | ', array_map(static fn(mixed $cell): string => (string) $cell, $cells));
+
+		$lines = [$line($headers)];
+		foreach (array_slice($rows, 0, $maxRows) as $row) {
+			$lines[] = $line($row);
+		}
+		if (count($rows) > $maxRows) {
+			$lines[] = sprintf('[... %d more rows]', count($rows) - $maxRows);
+		}
+
+		return implode("\n", $lines);
 	}
 
 	// -- The message flow ------------------------------------------------------
@@ -224,22 +446,58 @@ class ChatService
 	 * web request) and only the returned file ids travel through the queue - the
 	 * worker replays them as content blocks of the user message.
 	 *
+	 * The model and effort may change with any message; a change starts a new session
+	 * for the next turn (a session cannot switch models), which gets the earlier
+	 * transcript. Null keeps the model of the conversation, for a new one it means the
+	 * default of {@see ModelSelection}. The message stores the model it was sent with.
+	 *
+	 * $sender is who writes the message (stored with {@see ChatOptions::$senderField});
+	 * null = the owner of the conversation.
+	 *
 	 * @param list<AttachmentUpload> $uploads
-	 * @throws AiChatException with a message for the user (rate limit, attachments, API)
+	 * @throws AiChatException with a message for the user (rate limit, attachments, API,
+	 *         a model or effort that is not offered)
 	 */
-	public function enqueueMessage(ConversationInterface $conversation, string $userMessage, array $uploads = []): MessageInterface
-	{
+	public function enqueueMessage(
+		ConversationInterface $conversation,
+		string $userMessage,
+		array $uploads = [],
+		?string $model = null,
+		?string $effort = null,
+		object|int|string|null $sender = null,
+	): MessageInterface {
 		$userMessage = trim($userMessage);
 		if ($userMessage === '' && !$uploads) {
 			throw AiChatException::translatable('The message cannot be empty.', 'aiChat.error.emptyMessage');
 		}
 
-		$this->checkRateLimit($this->getOwner($conversation));
+		$this->checkPendingTurn($conversation);
+
+		$sender = $this->options->senderField !== null ? ($sender ?? $this->getOwner($conversation)) : null;
+		$this->checkRateLimit($sender ?? $this->getOwner($conversation));
+
+		// Validated before the uploads, stored only once nothing can fail anymore.
+		$hasMessages = $this->hasMessages($conversation);
+		$modelChoice = !$hasMessages || ($model ?? '') !== '' || ($effort ?? '') !== ''
+			? $this->options->modelSelection->resolve($model, $effort)
+			: null;
 
 		$attachments = $this->uploadAttachments($uploads);
 
+		if ($modelChoice !== null && ($modelChoice['model'] !== $conversation->getModel() || $modelChoice['effort'] !== $conversation->getEffort())) {
+			$conversation->setModel($modelChoice['model']);
+			$conversation->setEffort($modelChoice['effort']);
+			if ($hasMessages) {
+				// The session runs on the old model; the next turn starts a new one.
+				$conversation->setSessionId(null);
+			}
+		}
+
 		// The transcript is kept on our side too - history does not depend on the session.
 		$message = $this->addMessage($conversation, $userMessage, MessageInterface::AUTHOR_USER, attachments: $attachments ?: null);
+		if ($sender !== null) {
+			$this->em->getClassMetadata($this->options->messageClass)->setFieldValue($message, $this->options->senderField, $sender);
+		}
 
 		if ($conversation->getTitle() === '') {
 			$conversation->setTitle($this->createTitle($userMessage !== '' ? $userMessage : $attachments[0]['filename']));
@@ -328,6 +586,7 @@ class ChatService
 				static fn(array $a): Attachment => new Attachment((string) $a['fileId'], (string) $a['mediaType'], (string) ($a['filename'] ?? '')),
 				$attachments,
 			),
+			fn(): string => $this->buildHistoryForAi($conversation),
 		);
 
 		// Last line of defence: redact direct identifiers from the reply, including
@@ -435,6 +694,8 @@ class ChatService
 			->setConversation($conversation)
 			->setContent($content)
 			->setAuthor($author)
+			->setModel($conversation->getModel())
+			->setEffort($conversation->getEffort())
 			->setToolData($toolData)
 			->setAttachments($attachments)
 			->setTokensInput($tokensInput)
@@ -475,11 +736,43 @@ class ChatService
 	}
 
 	/**
-	 * Counts the user messages of the owner across all conversations.
+	 * Refuses a message while the last one of the conversation still waits for its
+	 * reply - e.g. two users writing into one conversation at the same time.
 	 *
 	 * @throws AiChatException
 	 */
-	protected function checkRateLimit(mixed $owner): void
+	protected function checkPendingTurn(ConversationInterface $conversation): void
+	{
+		if ($conversation->getId() === null || $this->options->pendingTurnSeconds <= 0) {
+			return;
+		}
+
+		$last = $this->em->createQueryBuilder()
+			->select('m.author, m.created')
+			->from($this->options->messageClass, 'm')
+			->where('m.' . $this->options->conversationField . ' = :conversation')
+			->setParameter('conversation', $conversation)
+			->orderBy('m.' . $this->messageIdField(), 'DESC')
+			->setMaxResults(1)
+			->getQuery()
+			->getOneOrNullResult();
+
+		if (
+			$last !== null
+			&& $last['author'] === MessageInterface::AUTHOR_USER
+			&& $last['created'] >= new \DateTimeImmutable('-' . $this->options->pendingTurnSeconds . ' seconds')
+		) {
+			throw AiChatException::translatable('The previous message is still being answered. Please wait for the reply.', 'aiChat.error.turnPending');
+		}
+	}
+
+	/**
+	 * Counts the user messages of the owner across all conversations - or, with
+	 * {@see ChatOptions::$senderField}, the messages the sender wrote anywhere.
+	 *
+	 * @throws AiChatException
+	 */
+	protected function checkRateLimit(mixed $user): void
 	{
 		$limits = [
 			['-1 minute', $this->options->rateLimitPerMinute, 'Rate limit exceeded. Please wait a moment before sending another message.', 'aiChat.error.rateLimitMinute'],
@@ -491,14 +784,21 @@ class ChatService
 				continue;
 			}
 
-			$count = (int) $this->em->createQueryBuilder()
+			$qb = $this->em->createQueryBuilder()
 				->select('COUNT(m)')
-				->from($this->options->messageClass, 'm')
-				->join('m.' . $this->options->conversationField, 'c')
-				->where('c.' . $this->options->ownerField . ' = :owner')
+				->from($this->options->messageClass, 'm');
+
+			if ($this->options->senderField !== null) {
+				$qb->where('m.' . $this->options->senderField . ' = :user');
+			} else {
+				$qb->join('m.' . $this->options->conversationField, 'c')
+					->where('c.' . $this->options->ownerField . ' = :user');
+			}
+
+			$count = (int) $qb
 				->andWhere('m.author = :author')
 				->andWhere('m.created >= :since')
-				->setParameter('owner', $owner)
+				->setParameter('user', $user)
 				->setParameter('author', MessageInterface::AUTHOR_USER)
 				->setParameter('since', new \DateTimeImmutable($interval))
 				->getQuery()
@@ -530,6 +830,15 @@ class ChatService
 			$this->provisioner->resolver($this->queryExecutor->getSchemaName()),
 			$this->turnOptions,
 		);
+	}
+
+	private function userKey(mixed $user): string
+	{
+		if (!is_object($user)) {
+			return (string) $user;
+		}
+
+		return implode('|', array_map('strval', $this->em->getClassMetadata($user::class)->getIdentifierValues($user)));
 	}
 
 	private function messageIdField(): string

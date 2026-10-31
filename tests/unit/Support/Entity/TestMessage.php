@@ -24,6 +24,10 @@ class TestMessage implements MessageInterface
 	#[ORM\JoinColumn(nullable: false)]
 	protected ConversationInterface $conversation;
 
+	#[ORM\ManyToOne(targetEntity: TestOwner::class)]
+	#[ORM\JoinColumn(nullable: true)]
+	protected ?TestOwner $sender = null;
+
 	public function getId(): ?int
 	{
 		return $this->id;

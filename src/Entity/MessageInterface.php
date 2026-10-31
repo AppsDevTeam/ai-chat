@@ -75,6 +75,18 @@ interface MessageInterface
 
 	public function setTokensOutput(?int $tokensOutput): static;
 
+	/**
+	 * The model of the conversation when the message was written (the user's choice
+	 * for a question, the answering model for a reply); null = the agent model.
+	 */
+	public function getModel(): ?string;
+
+	public function setModel(?string $model): static;
+
+	public function getEffort(): ?string;
+
+	public function setEffort(?string $effort): static;
+
 	/** The reply is an error text (the turn failed), not an answer. */
 	public function isError(): bool;
 

@@ -29,6 +29,9 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 	/** @var list<string> */
 	public array $createdSessionIds = [];
 
+	/** @var list<array{id: string, effort?: string}|null> the model override of every created session */
+	public array $createdSessionModels = [];
+
 	/** Fail user.message on sessions that were NOT created by this fake (stale ones). */
 	public bool $failOnUserMessage = false;
 
@@ -76,10 +79,11 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 		return ['id' => 'env_fake'];
 	}
 
-	public function createSession(string $agentId, string $environmentId, ?string $title = null): array
+	public function createSession(string $agentId, string $environmentId, ?string $title = null, ?array $model = null): array
 	{
 		$id = 'sesn_' . (++$this->sessionCounter);
 		$this->createdSessionIds[] = $id;
+		$this->createdSessionModels[] = $model;
 
 		return ['id' => $id, 'status' => 'idle'];
 	}

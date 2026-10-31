@@ -29,8 +29,31 @@
  * The URLs are used as they are, so tokens the framework puts into them (e.g. a
  * CSRF token of signals) are kept.
  *
+ * Model selection: with `modelSelection` in the config ({models: [{id, label, contextWindowTokens}],
+ * efforts, defaultModel, defaultEffort} - ModelSelection::toClient()) the input
+ * gets a model and an effort select. The choice travels with every message and can
+ * be switched within a conversation (the server then starts a new session with the
+ * transcript); AI replies show the model that wrote them.
+ *
+ * Rating: with `urls.rate` the owner can rate a conversation that has a reply
+ * (thumbs up / down + an optional comment); a read-only view shows the rating.
+ *
+ * Access: `readOnly` hides the input, `canManage` (default: not read-only) allows
+ * rating and deleting - a colleague continuing someone's conversation writes but
+ * does not manage it. The server sends both with the list and the conversation.
+ * User messages with `sender: {name, self}` of someone else show the name.
+ *
+ * Shareable links: with `urlParam` (e.g. "conversation") the open conversation is
+ * kept in that query parameter of the page URL (history.replaceState) and a page
+ * opened with it loads that conversation.
+ *
+ * Extra parameters: `params` ({name: value}) go with every request and export
+ * link, e.g. whose conversations an administrator views. setParams() changes them
+ * at runtime: the chat empties and reloads the conversation list, which also
+ * tells whether the view is read-only.
+ *
  * Events dispatched on the root element (bubbling):
- *   ai-chat:conversation  {conversation}  created, renamed or a reply arrived
+ *   ai-chat:conversation  {conversation}  created, renamed, rated or a reply arrived
  *   ai-chat:deleted       {id}
  */
 
@@ -53,6 +76,7 @@ const DEFAULT_LABELS = {
 	contextOk: 'I remember the whole conversation.',
 	contextWarn: 'The conversation is getting long - I will start forgetting the beginning soon.',
 	contextFull: 'Memory is almost full, consider starting a new conversation.',
+	contextSwitch: 'With another model or effort the next message starts a new memory with the transcript of the conversation.',
 	errorConnection: 'Connection error. Please try again.',
 	errorTimeout: 'The response is taking too long. Reload the conversation later.',
 	errorUnavailable: 'The conversation is no longer available.',
@@ -60,6 +84,18 @@ const DEFAULT_LABELS = {
 	errorTooManyFiles: 'You can attach at most {max} files per message.',
 	errorFileTooLarge: 'File "{name}" is too large. The limit is {max} MB.',
 	sentContent: 'Personal data was hidden from the AI - show what the AI received',
+	model: 'Model',
+	effort: 'Thinking',
+	modelHint: 'Model and thinking depth for the next message. Switching them within a conversation starts the assistant over from the transcript.',
+	effortLevels: { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
+	rateQuestion: 'Was this conversation helpful?',
+	rateUp: 'Helpful',
+	rateDown: 'Not helpful',
+	rateComment: 'What could be better? (optional)',
+	rateCommentUp: 'What did you like? (optional)',
+	rateSave: 'Send',
+	rateThanks: 'Thank you for your feedback.',
+	rated: 'Rated',
 };
 
 const DEFAULT_ICONS = {
@@ -74,12 +110,18 @@ const DEFAULT_ICONS = {
 	spinner: 'fa-solid fa-spinner fa-spin',
 	welcome: 'fa-solid fa-comments',
 	sentContent: 'fa-solid fa-shield-halved',
+	rateUp: 'fa-solid fa-thumbs-up',
+	rateDown: 'fa-solid fa-thumbs-down',
 };
 
 const DEFAULTS = {
 	mode: 'full',
 	conversationId: null,
 	readOnly: false,
+	// null = not read-only.
+	canManage: null,
+	// Query parameter of the page URL holding the open conversation; null = off.
+	urlParam: null,
 	locale: undefined,
 	accept: '',
 	maxAttachments: 4,
@@ -89,6 +131,8 @@ const DEFAULTS = {
 	pollMaxMs: 660000,
 	// Full mode stretches to the bottom of the window; off when a parent sizes the chat.
 	fitViewport: null,
+	// Sent with every request (query or FormData) and export link.
+	params: {},
 };
 
 const MARKDOWN_TAGS = ['p', 'br', 'strong', 'em', 'code', 'pre', 'ul', 'ol', 'li',
@@ -127,6 +171,7 @@ export class AiChat {
 		this.config = { ...DEFAULTS, ...config };
 		this.urls = config.urls || {};
 		this.labels = { ...DEFAULT_LABELS, ...(config.labels || {}) };
+		this.labels.effortLevels = { ...DEFAULT_LABELS.effortLevels, ...(config.labels?.effortLevels || {}) };
 		this.icons = { ...DEFAULT_ICONS, ...(config.icons || {}) };
 		this.deps = {
 			marked: deps.marked ?? window.marked,
@@ -137,13 +182,20 @@ export class AiChat {
 
 		this.single = this.config.mode === 'single';
 		this.readOnly = !!this.config.readOnly;
-		this.conversationId = this.config.conversationId ?? null;
+		this.canManage = this.config.canManage ?? !this.readOnly;
+		this.conversationId = this.config.conversationId ?? this.readUrlConversation();
+		this.params = { ...(this.config.params || {}) };
 		this.loading = false;
 		this.files = [];
 		this.charts = [];
 		this.pollTimer = null;
 		this.pollAttempts = 0;
 		this.pollStartedAt = 0;
+		this.modelSelection = this.config.modelSelection?.models?.length ? this.config.modelSelection : null;
+		this.preferredModel = this.modelSelection?.defaultModel ?? null;
+		this.preferredEffort = this.modelSelection?.defaultEffort ?? null;
+		this.conversation = null;
+		this.hasReply = false;
 		this.onResize = () => this.fitHeight();
 
 		this.build();
@@ -163,7 +215,7 @@ export class AiChat {
 			this.refreshConversationList();
 		}
 
-		this.applyReadOnly(this.readOnly);
+		this.applyReadOnly(this.readOnly, this.canManage);
 	}
 
 	destroy() {
@@ -237,12 +289,15 @@ export class AiChat {
 		]);
 
 		this.fileList = el('div', { class: 'ai-chat__files', hidden: true });
+		this.buildModelOptions();
+		this.buildRating();
 		this.loadingBox = el('div', { class: 'ai-chat__loading', hidden: true }, [icon(this.icons.spinner), ' ' + this.labels.loading]);
 
 		// A real form: Enter in assistive technologies submits it, and hosts like the
 		// fancyadmin side panel recognise their content by it.
 		this.form = el('form', { class: 'ai-chat__input-area', novalidate: true }, [
 			this.fileList,
+			this.modelOptions,
 			el('div', { class: 'ai-chat__input-wrapper' }, [this.attachButton, this.textarea, this.sendButton]),
 			this.fileInput,
 			this.loadingBox,
@@ -256,17 +311,199 @@ export class AiChat {
 		root.append(el('div', { class: 'ai-chat__main' }, [
 			el('div', { class: 'ai-chat__header' }, [this.title, this.context]),
 			this.messages,
+			this.ratingBox,
 			this.form,
 		]));
 	}
 
-	applyReadOnly(readOnly) {
+	/** The model and effort selects; null without modelSelection in the config. */
+	buildModelOptions() {
+		this.modelOptions = null;
+		if (!this.modelSelection) {
+			return;
+		}
+
+		const select = (label, options, value) => {
+			const element = el('select', { class: 'ai-chat__option-select', 'aria-label': label },
+				options.map(([id, text]) => el('option', { value: id }, [text])));
+			element.value = value ?? '';
+			return element;
+		};
+
+		this.modelSelect = select(this.labels.model, this.modelSelection.models.map((model) => [model.id, modelOptionLabel(model)]), this.preferredModel);
+		this.modelSelect.addEventListener('change', () => {
+			this.preferredModel = this.modelSelect.value;
+			this.renderContextUsage();
+		});
+
+		const options = [el('label', { class: 'ai-chat__option' }, [
+			el('span', { class: 'ai-chat__option-label' }, [this.labels.model]), this.modelSelect,
+		])];
+
+		const efforts = this.modelSelection.efforts || [];
+		if (efforts.length) {
+			this.effortSelect = select(this.labels.effort, efforts.map((effort) => [effort, this.labels.effortLevels[effort] || effort]), this.preferredEffort);
+			this.effortSelect.addEventListener('change', () => {
+				this.preferredEffort = this.effortSelect.value;
+				this.renderContextUsage();
+			});
+			options.push(el('label', { class: 'ai-chat__option' }, [
+				el('span', { class: 'ai-chat__option-label' }, [this.labels.effort]), this.effortSelect,
+			]));
+		}
+
+		this.modelOptions = el('div', { class: 'ai-chat__options', title: this.labels.modelHint }, options);
+	}
+
+	/**
+	 * An open conversation shows the model it runs on (the default for one that ran
+	 * on the agent model), a new one the user's last choice.
+	 */
+	setModelChoice(conversation) {
+		if (!this.modelOptions) {
+			return;
+		}
+
+		const started = conversation?.id != null;
+		this.modelSelect.value = (started ? conversation.model ?? this.modelSelection.defaultModel : this.preferredModel) ?? '';
+		if (this.effortSelect) {
+			this.effortSelect.value = (started ? conversation.effort ?? this.modelSelection.defaultEffort : this.preferredEffort) ?? '';
+		}
+		this.renderContextUsage();
+	}
+
+	/** "Claude Opus 5.5 · Max" of a message; '' without a model. */
+	modelLabel(message) {
+		if (!this.modelSelection || !message.model) {
+			return '';
+		}
+
+		const model = this.modelSelection.models.find((item) => item.id === message.model);
+		const effort = message.effort ? this.labels.effortLevels[message.effort] || message.effort : '';
+
+		return [model?.label || message.model, effort].filter(Boolean).join(' · ');
+	}
+
+	buildRating() {
+		this.ratingBox = el('div', { class: 'ai-chat__rating', hidden: true });
+		if (!this.urls.rate) {
+			return;
+		}
+
+		const button = (rating, label, iconClass) => {
+			const element = el('button', { type: 'button', class: 'ai-chat__rating-btn', title: label, 'aria-label': label, 'aria-pressed': 'false', 'data-rating': rating }, [icon(iconClass)]);
+			element.addEventListener('click', () => this.onRate(rating));
+			return element;
+		};
+
+		this.rateUpButton = button(1, this.labels.rateUp, this.icons.rateUp);
+		this.rateDownButton = button(-1, this.labels.rateDown, this.icons.rateDown);
+		this.ratingStatus = el('span', { class: 'ai-chat__rating-status' });
+
+		this.ratingComment = el('textarea', { class: 'ai-chat__rating-comment', rows: 2, maxlength: 2000 });
+		this.ratingSave = el('button', { type: 'button', class: 'btn btn-primary btn-sm ai-chat__rating-save' }, [this.labels.rateSave]);
+		this.ratingSave.addEventListener('click', () => this.saveRating(this.conversation?.rating ?? null, this.ratingComment.value));
+		this.ratingCommentRow = el('div', { class: 'ai-chat__rating-comment-row', hidden: true }, [this.ratingComment, this.ratingSave]);
+		this.ratingCommentText = el('div', { class: 'ai-chat__rating-comment-text', hidden: true });
+
+		this.ratingBox.append(
+			el('div', { class: 'ai-chat__rating-bar' }, [
+				el('span', { class: 'ai-chat__rating-question' }, [this.labels.rateQuestion]),
+				this.rateUpButton,
+				this.rateDownButton,
+				this.ratingStatus,
+			]),
+			this.ratingCommentRow,
+			this.ratingCommentText,
+		);
+	}
+
+	/** The rating bar under the messages, once the conversation has a reply. */
+	renderRating() {
+		if (!this.urls.rate) {
+			return;
+		}
+
+		const rating = this.conversation?.rating ?? null;
+		// Only the owner rates; anyone else sees the owner's feedback, if there is any.
+		const locked = !this.canManage;
+		this.ratingBox.hidden = !this.conversation?.id || !this.hasReply || (locked && rating === null);
+		if (this.ratingBox.hidden) {
+			return;
+		}
+
+		this.ratingBox.classList.toggle('ai-chat__rating--readonly', locked);
+		for (const button of [this.rateUpButton, this.rateDownButton]) {
+			const active = Number(button.dataset.rating) === rating;
+			button.classList.toggle('ai-chat__rating-btn--active', active);
+			button.setAttribute('aria-pressed', active ? 'true' : 'false');
+			button.disabled = locked;
+		}
+
+		const comment = this.conversation?.ratingComment || '';
+		this.ratingCommentText.hidden = !locked || comment === '';
+		this.ratingCommentText.textContent = comment;
+		if (locked) {
+			this.ratingCommentRow.hidden = true;
+		}
+	}
+
+	onRate(rating) {
+		if (!this.canManage || !this.conversation?.id) {
+			return;
+		}
+
+		// A second click on the active thumb takes the rating back.
+		if (this.conversation.rating === rating) {
+			this.ratingCommentRow.hidden = true;
+			this.saveRating(null, '');
+			return;
+		}
+
+		this.ratingComment.value = this.conversation.ratingComment || '';
+		this.ratingComment.placeholder = rating > 0 ? this.labels.rateCommentUp : this.labels.rateComment;
+		this.ratingCommentRow.hidden = false;
+		this.saveRating(rating, this.ratingComment.value).then(() => this.ratingComment.focus());
+	}
+
+	async saveRating(rating, comment) {
+		const conversationId = this.conversation?.id;
+		if (!conversationId) {
+			return;
+		}
+
+		const data = await this.request('POST', this.urls.rate, { conversationId, rating: rating ?? '', comment: comment ?? '' })
+			.catch(() => ({ success: false, error: this.labels.errorConnection }));
+
+		if (String(this.conversationId) !== String(conversationId)) {
+			return;
+		}
+
+		if (!data.success) {
+			this.appendError(data.error || this.labels.errorUnknown);
+			this.scrollToBottom();
+			return;
+		}
+
+		this.conversation = data.conversation;
+		this.ratingStatus.textContent = rating !== null && comment.trim() !== '' ? this.labels.rateThanks : '';
+		if (rating !== null && comment.trim() !== '') {
+			this.ratingCommentRow.hidden = true;
+		}
+		this.renderRating();
+		this.emit('ai-chat:conversation', { conversation: data.conversation, created: false });
+		this.refreshConversationList();
+	}
+
+	applyReadOnly(readOnly, canManage = !readOnly) {
 		this.readOnly = readOnly;
+		this.canManage = canManage;
 		this.root.classList.toggle('ai-chat--readonly', readOnly);
 		this.form.hidden = readOnly;
 		if (this.newButton) {
 			this.newButton.hidden = readOnly;
 		}
+		this.renderRating();
 	}
 
 	fitHeight() {
@@ -344,7 +581,7 @@ export class AiChat {
 		}
 
 		if (typeof data.readOnly === 'boolean') {
-			this.applyReadOnly(data.readOnly);
+			this.applyReadOnly(data.readOnly, data.canManage ?? !data.readOnly);
 		}
 
 		this.renderConversationList(data.conversations || []);
@@ -366,10 +603,15 @@ export class AiChat {
 				tabindex: 0,
 			}, [
 				el('div', { class: 'ai-chat__conversation-title' }, [conversation.title || this.labels.noTitle]),
-				el('div', { class: 'ai-chat__conversation-date' }, [this.formatDate(conversation.updated)]),
+				el('div', { class: 'ai-chat__conversation-date' }, [
+					this.formatDate(conversation.updated),
+					conversation.rating ? el('span', { class: 'ai-chat__conversation-rating ai-chat__conversation-rating--' + (conversation.rating > 0 ? 'up' : 'down'), title: this.labels.rated }, [
+						icon(conversation.rating > 0 ? this.icons.rateUp : this.icons.rateDown),
+					]) : '',
+				]),
 			]);
 
-			if (!this.readOnly) {
+			if (this.canManage) {
 				item.append(el('button', { type: 'button', class: 'ai-chat__conversation-delete', 'data-id': conversation.id, title: this.labels.delete, 'aria-label': this.labels.delete }, [
 					icon(this.icons.delete),
 				]));
@@ -413,20 +655,68 @@ export class AiChat {
 			return;
 		}
 
+		this.reset();
+		this.focusInput();
+	}
+
+	/**
+	 * Replaces the extra request parameters, empties the chat and reloads the
+	 * conversation list (its response sets the read-only state).
+	 */
+	setParams(params) {
+		this.params = { ...(params || {}) };
+		this.reset();
+
+		return this.refreshConversationList();
+	}
+
+	/** No conversation open, nothing pending. */
+	reset() {
 		this.stopPolling();
 		this.setLoading(false);
 		this.conversationId = null;
+		this.conversation = null;
 		this.clearMessages();
 		this.showWelcome(true);
 		this.setTitle('');
+		this.setModelChoice(null);
+		this.renderRating();
 		this.markActive();
-		this.focusInput();
+		this.writeUrlConversation(null);
+	}
+
+	/** The conversation id from the page URL ({@link DEFAULTS.urlParam}). */
+	readUrlConversation() {
+		if (!this.config.urlParam) {
+			return null;
+		}
+
+		return new URL(window.location.href).searchParams.get(this.config.urlParam) || null;
+	}
+
+	/** Keeps the open conversation in the page URL, so the link can be shared. */
+	writeUrlConversation(conversationId) {
+		if (!this.config.urlParam) {
+			return;
+		}
+
+		const url = new URL(window.location.href);
+		if (conversationId) {
+			url.searchParams.set(this.config.urlParam, conversationId);
+		} else {
+			url.searchParams.delete(this.config.urlParam);
+		}
+
+		if (url.href !== window.location.href) {
+			window.history.replaceState(window.history.state, '', url);
+		}
 	}
 
 	async loadConversation(conversationId) {
 		this.stopPolling();
 		this.conversationId = conversationId;
 		this.markActive();
+		this.writeUrlConversation(conversationId);
 		this.setLoading(true);
 
 		let data;
@@ -443,21 +733,29 @@ export class AiChat {
 
 		this.setLoading(false);
 		this.clearMessages();
+		this.conversation = null;
 
 		if (!data.success) {
+			this.setModelChoice(null);
+			this.renderRating();
+			this.writeUrlConversation(null);
 			this.appendError(data.error || this.labels.errorUnavailable);
 			return;
 		}
 
+		this.conversation = data.conversation ?? null;
+		const messages = data.messages || [];
+		this.setModelChoice(this.conversation);
+
 		if (typeof data.readOnly === 'boolean') {
-			this.applyReadOnly(data.readOnly);
+			this.applyReadOnly(data.readOnly, data.canManage ?? !data.readOnly);
 		}
 
 		this.setTitle(data.conversation?.title);
 		this.updateContextUsage(data.contextUsage);
 
-		const messages = data.messages || [];
 		messages.forEach((message) => this.appendMessage(message));
+		this.renderRating();
 		if (!messages.length) {
 			this.showWelcome(true);
 		}
@@ -475,7 +773,7 @@ export class AiChat {
 	}
 
 	async deleteConversation(conversationId) {
-		if (this.readOnly) {
+		if (!this.canManage) {
 			return;
 		}
 
@@ -524,6 +822,13 @@ export class AiChat {
 		body.append('message', text);
 		files.forEach((file) => body.append('attachments[]', file, file.name));
 
+		if (this.modelOptions) {
+			body.append('model', this.modelSelect.value);
+			if (this.effortSelect) {
+				body.append('effort', this.effortSelect.value);
+			}
+		}
+
 		let data;
 		try {
 			data = await this.request('POST', this.urls.send, body);
@@ -546,6 +851,9 @@ export class AiChat {
 
 		const created = String(this.conversationId) !== String(data.conversation.id);
 		this.conversationId = data.conversation.id;
+		this.writeUrlConversation(this.conversationId);
+		this.conversation = data.conversation;
+		this.setModelChoice(this.conversation);
 		this.setTitle(data.conversation.title);
 		this.emit('ai-chat:conversation', { conversation: data.conversation, created });
 
@@ -604,12 +912,21 @@ export class AiChat {
 				return;
 			}
 
-			if (data?.messages?.length) {
-				this.setLoading(false);
-				data.messages.forEach((message) => this.appendMessage(message));
+			// Messages of other senders may arrive meanwhile - show them, and stop only
+			// once the reply (or an error) is there.
+			const messages = data?.messages || [];
+			messages.forEach((message) => this.appendMessage(message));
+			if (messages.length) {
+				afterId = messages[messages.length - 1].id ?? afterId;
 				this.scrollToBottom();
+			}
+
+			if (messages.some((message) => message.author !== 'user' || message.error)) {
+				this.setLoading(false);
 				this.setTitle(data.conversation?.title);
 				this.updateContextUsage(data.contextUsage);
+				this.conversation = data.conversation ?? this.conversation;
+				this.renderRating();
 				this.emit('ai-chat:conversation', { conversation: data.conversation, created: false });
 				this.refreshConversationList();
 				this.focusInput();
@@ -653,12 +970,13 @@ export class AiChat {
 		};
 
 		if (method === 'GET') {
-			Object.entries(data).forEach(([key, value]) => target.searchParams.set(key, value ?? ''));
+			Object.entries({ ...this.params, ...data }).forEach(([key, value]) => target.searchParams.set(key, value ?? ''));
 		} else if (data instanceof FormData) {
+			Object.entries(this.params).forEach(([key, value]) => data.has(key) || data.append(key, value ?? ''));
 			options.body = data;
 		} else {
 			options.body = new FormData();
-			Object.entries(data).forEach(([key, value]) => options.body.append(key, value ?? ''));
+			Object.entries({ ...this.params, ...data }).forEach(([key, value]) => options.body.append(key, value ?? ''));
 		}
 
 		const response = await fetch(target, options);
@@ -719,7 +1037,12 @@ export class AiChat {
 		this.destroyCharts();
 		this.messages.replaceChildren();
 		this.welcome = null;
+		this.hasReply = false;
 		this.updateContextUsage(null);
+		if (this.ratingStatus) {
+			this.ratingStatus.textContent = '';
+			this.ratingCommentRow.hidden = true;
+		}
 	}
 
 	appendMessage(message) {
@@ -730,6 +1053,9 @@ export class AiChat {
 		this.showWelcome(false);
 
 		const author = message.author === 'user' ? 'user' : 'ai';
+		if (author === 'ai') {
+			this.hasReply = true;
+		}
 		const item = el('div', { class: 'ai-chat__message ai-chat__message--' + author });
 
 		// The question as the AI received it (personal data replaced with anchors), plain text only
@@ -740,6 +1066,15 @@ export class AiChat {
 			]));
 		}
 		const bubble = el('div', { class: 'ai-chat__bubble ai-chat__bubble--' + author });
+
+		if (author === 'user' && message.sender && !message.sender.self && message.sender.name) {
+			item.append(el('div', { class: 'ai-chat__sender' }, [message.sender.name]));
+		}
+
+		const modelLabel = author === 'ai' ? this.modelLabel(message) : '';
+		if (modelLabel) {
+			item.append(el('div', { class: 'ai-chat__model-tag' }, [modelLabel]));
+		}
 
 		if (author === 'ai') {
 			this.renderMarkdown(bubble, message.content);
@@ -827,13 +1162,16 @@ export class AiChat {
 			return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 		};
 
-		const datasets = (chart.datasets || []).map((dataset, index) => ({
-			label: dataset.label,
-			data: dataset.data,
-			backgroundColor: pie ? dataset.data.map((_, i) => color(i, 0.7)) : color(index, 0.7),
-			borderColor: pie ? dataset.data.map((_, i) => color(i, 1)) : color(index, 1),
-			borderWidth: 1,
-		}));
+		const datasets = toList(chart.datasets).filter((dataset) => dataset && typeof dataset === 'object').map((dataset, index) => {
+			const data = toList(dataset.data);
+			return {
+				label: dataset.label,
+				data,
+				backgroundColor: pie ? data.map((_, i) => color(i, 0.7)) : color(index, 0.7),
+				borderColor: pie ? data.map((_, i) => color(i, 1)) : color(index, 1),
+				borderWidth: 1,
+			};
+		});
 
 		// Created once the canvas is in the document, so Chart.js can measure it.
 		requestAnimationFrame(() => {
@@ -843,7 +1181,7 @@ export class AiChat {
 
 			this.charts.push(new Chart(canvas, {
 				type: chart.chart_type,
-				data: { labels: chart.labels, datasets },
+				data: { labels: toList(chart.labels), datasets },
 				options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: false } } },
 			}));
 		});
@@ -852,8 +1190,8 @@ export class AiChat {
 	}
 
 	renderTable(table) {
-		const headers = table.headers || [];
-		const rows = table.rows || [];
+		const headers = toList(table.headers);
+		const rows = toList(table.rows).map(toList);
 
 		const download = el('button', { type: 'button', class: 'btn btn-sm ai-chat__table-export' }, [
 			icon(this.icons.download), ' ' + this.labels.exportCsv,
@@ -883,6 +1221,7 @@ export class AiChat {
 		}
 
 		const href = new URL(this.urls.export, window.location.href);
+		Object.entries(this.params).forEach(([key, value]) => href.searchParams.set(key, value ?? ''));
 		href.searchParams.set('conversationId', this.conversationId);
 		href.searchParams.set('messageId', messageId);
 		href.searchParams.set('token', result.token);
@@ -901,22 +1240,50 @@ export class AiChat {
 
 	// Context-window usage: <70 % ok, 70-90 % warning, >90 % nearly full + a CTA.
 	updateContextUsage(usage) {
+		this.contextUsage = usage;
+		this.renderContextUsage();
+	}
+
+	/**
+	 * The gauge against the selected model: its window, and once the model or effort
+	 * differs from the conversation's (the next message starts a new session with the
+	 * transcript) the estimated size of that session.
+	 */
+	renderContextUsage() {
+		const usage = this.contextUsage;
 		if (!usage || !usage.window || !usage.used) {
 			this.context.hidden = true;
 			this.contextNew.hidden = true;
 			return;
 		}
 
-		const percent = Math.max(0, Math.min(100, usage.percent || 0));
+		let used = usage.used;
+		let window = usage.window;
+		let switching = false;
+		if (this.modelOptions && this.modelSelect.value) {
+			const model = this.modelSelection.models.find((item) => item.id === this.modelSelect.value);
+			window = model?.contextWindowTokens || window;
+			switching = usage.historyTokens != null && (
+				this.modelSelect.value !== usage.model
+				|| (this.effortSelect != null && this.effortSelect.value !== (usage.effort ?? ''))
+			);
+			if (switching) {
+				used = usage.historyTokens;
+			}
+		}
+
+		const percent = Math.max(0, Math.min(100, Math.round(used / window * 100)));
 		const level = percent > 90 ? 'full' : (percent >= 70 ? 'warn' : 'ok');
 
 		this.context.hidden = false;
 		this.context.classList.remove('ai-chat__context--ok', 'ai-chat__context--warn', 'ai-chat__context--full');
 		this.context.classList.add('ai-chat__context--' + level);
-		this.context.title = `${this.labels.contextLabel}: ${usage.used} / ${usage.window} (${percent} %)`;
+		this.context.title = `${this.labels.contextLabel}: ${switching ? '~' : ''}${used} / ${window} (${percent} %)`;
 		this.contextFill.style.width = percent + '%';
-		this.contextText.textContent = this.labels['context' + level.charAt(0).toUpperCase() + level.slice(1)];
-		this.contextPercent.textContent = percent + ' %';
+		this.contextText.textContent = switching
+			? this.labels.contextSwitch
+			: this.labels['context' + level.charAt(0).toUpperCase() + level.slice(1)];
+		this.contextPercent.textContent = (switching ? '~' : '') + percent + ' %';
 		this.contextNew.hidden = level !== 'full' || this.readOnly;
 	}
 
@@ -941,6 +1308,41 @@ export class AiChat {
 /** Mounts every [data-ai-chat] element under the root. */
 export function mountAll(root = document, deps = {}) {
 	return Array.from(root.querySelectorAll('[data-ai-chat]')).map((element) => AiChat.mount(element, deps));
+}
+
+/**
+ * An array value of a tool result; a JSON-encoded string (the model sometimes sends
+ * "rows": "[[...]]") is decoded, anything else becomes an empty list.
+ */
+/** 1000000 -> "1M", 200000 -> "200k"; '' without a size. */
+export function formatTokens(tokens) {
+	if (!tokens) {
+		return '';
+	}
+
+	return tokens >= 1000000
+		? `${Math.round(tokens / 100000) / 10}M`
+		: `${Math.round(tokens / 1000)}k`;
+}
+
+/** "Claude Opus 5.5 (1M)" - the label with the context window. */
+function modelOptionLabel(model) {
+	const label = model.label || model.id;
+	const window = formatTokens(model.contextWindowTokens);
+
+	return window ? `${label} (${window})` : label;
+}
+
+export function toList(value) {
+	if (typeof value === 'string') {
+		try {
+			value = JSON.parse(value);
+		} catch {
+			return [];
+		}
+	}
+
+	return Array.isArray(value) ? value : [];
 }
 
 /**
