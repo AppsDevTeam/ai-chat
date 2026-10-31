@@ -408,6 +408,7 @@ $default): string)`. Without it the English defaults are used. Keys:
 | `aiChat.error.serviceUnavailable` | `detail` |
 | `aiChat.error.turnTimeout`, `aiChat.error.tooManyToolCalls` | |
 | `aiChat.error.conversationNotFound`, `aiChat.error.invalidExport` | |
+| `aiChat.error.piiCheckUnavailable` | |
 | `aiChat.error.unknownModel` | `model` |
 | `aiChat.error.unknownEffort` | `effort` |
 | `aiChat.error.invalidRating` | |
@@ -415,7 +416,24 @@ $default): string)`. Without it the English defaults are used. Keys:
 | `aiChat.error.unexpected` | |
 | `aiChat.export.empty`, `aiChat.export.failed` | |
 
-The widget texts are passed in its `labels` config.
+The widget texts are passed in its `labels` config (incl. `sentContent`, the
+summary of the "what the AI received" block).
+
+## Upgrading to 0.8
+
+- `MessageInterface` has `getSentContent()` / `setSentContent()` - the trait
+  implements them and maps a new column, so every project needs a migration:
+
+  ```sql
+  ALTER TABLE ai_message ADD sent_content LONGTEXT DEFAULT NULL;
+  ```
+
+  Implementations without `MessageTrait` have to add the methods.
+- `ChatEndpoint::clientMessage()` returns `sent_content`; the widget renders it
+  (label `sentContent`, icon `sentContent`, styles `.ai-chat__sent*`).
+- Nothing else changes until you pass a `Pseudonymizer` to `ChatService` - see
+  [Input pseudonymization](#input-pseudonymization) for its table.
+- The JS widget follows the PHP versions again (`adt-ai-chat` 0.8.0).
 
 ## Upgrading to 0.11
 
@@ -518,6 +536,98 @@ appeared in personal-data columns of SQL results (names, birth dates), which no
 regex can recognise. Replacement labels and the phone prefix are configurable for
 localized chats.
 
+## Input pseudonymization
+
+The anonymized views protect the data in the database, not what the user types:
+"Text Jane Doe, born 1.2.1980, phone 777 123 456". With a `Pseudonymization\Pseudonymizer`
+the text goes to the AI with anchors instead of personal data:
+
+- data that belongs to exactly one data subject (patient, client ...) →
+  `[SUBJECT #123]`, the subject's id - not personal data, the AI uses it in SQL and
+  its tools right away,
+- anything else → `[PERSON_1]`, `[EMAIL_1]`, `[ADDRESS_1]` ...; the value is stored
+  with the conversation (your pseudonym entity), the same value keeps its anchor.
+
+The stored reply gets the real values back (`restore()`, after the
+`PiiResponseFilter` - otherwise the filter would redact the restored e-mails and
+phones), the AI only ever has the anchors. The reply also remembers the question
+as the AI received it (`sent_content`, without the note for the AI); the widget
+shows it collapsed above the reply.
+
+Data is found by:
+
+1. patterns (`Pseudonymizer::DEFAULT_PATTERNS`, CZ/SK flavoured: birth numbers,
+   e-mails, phones, bank accounts, IBAN) - work without anything else,
+2. a `PiiDetector` - `OpenAiCompatiblePiiDetector` asks an OpenAI-compatible chat
+   completions API (a qwen or llama on your infrastructure, the text must not leave
+   it) for names in any form, addresses, birth dates, document numbers ...,
+3. your `PiiSubjectResolver` - which subject a finding belongs to (by its e-mail,
+   birth number, name ...), what stays readable (names of employees) and findings
+   from your own data (names matched against your subjects).
+
+Only whole spans are replaced: "Jan" does not touch "Janovice".
+
+```php
+#[ORM\Entity]
+#[ORM\UniqueConstraint(name: 'uniq_ai_pseudonym_anchor', columns: ['conversation_id', 'anchor'])]
+class AiPseudonym implements PseudonymInterface
+{
+	use PseudonymTrait;    // anchor VARCHAR(40), value TEXT
+
+	#[ORM\ManyToOne(targetEntity: AiChatConversation::class)]
+	#[ORM\JoinColumn(nullable: false, onDelete: 'CASCADE')]
+	protected ConversationInterface $conversation;
+	...
+}
+
+final class ClientResolver implements PiiSubjectResolver
+{
+	public function resolve(PiiFinding $finding): int|string|null
+	{
+		$ids = match ($finding->kind) {
+			PiiFinding::EMAIL => $this->clients->idsByEmail($finding->text),
+			PiiFinding::NAME => $this->clients->idsByName($finding->firstName, $finding->lastName),
+			default => [],
+		};
+		return count($ids) === 1 ? $ids[0] : null;
+	}
+
+	public function isReadable(PiiFinding $finding): bool { return $this->staff->has($finding); }
+	public function findInText(string $text): array { return []; }
+	public function label(int|string $subject): ?string { return $this->clients->get($subject)?->getFullName(); }
+}
+
+$pseudonymizer = new Pseudonymizer(
+	$em,
+	AiPseudonym::class,
+	new OpenAiCompatiblePiiDetector($url, 'qwen3', apiKey: $key, required: true, logger: $logger),
+	new ClientResolver(...),
+	subjectAnchor: '[CLIENT #%s]',
+	// labels: [PiiFinding::NAME => 'PERSON', ...], note: '...', patterns: [...]
+);
+
+$chat = new ChatService(..., logger: $logger, pseudonymizer: $pseudonymizer, piiCheckListener: $audit);
+```
+
+**Required check.** With `required: true` (the default) a detector that is not
+configured, fails or returns no JSON stops the message: nothing goes to the AI, no
+anchor is created and the conversation gets the error reply
+`aiChat.error.piiCheckUnavailable`. With `required: false` (local development
+without the model) the patterns and the resolver still apply. The log never
+contains the user's text or the model's reply.
+
+**Audit.** A `PiiCheckListener` is told about every message: `checked()` with the
+counts of replaced spans per anchor kind (`PseudonymizedText::$findings`, never
+the values) and whether the detector ran, `unavailable()` when the required check
+stopped it.
+
+**Attachments** are uploaded to the Files API already in the web request and are
+not pseudonymized - turn them off (`AttachmentPolicy(maxCount: 0)`) when you
+pseudonymize.
+
+Exclude the pseudonym entity from the anonymized schema: its values must never
+reach the AI.
+
 ## System prompt
 
 `SystemPromptBuilder` renders a template with a `{{tableList}}` placeholder; only
@@ -537,5 +647,5 @@ The suite drives the full turn loop against a scriptable fake of the Managed
 Agents API (tool round-trips, history isolation, timeouts, stale-session retry,
 token accounting), the chat service and endpoint over an in-memory SQLite database
 (ownership, rate limits, attachments, error replies, the tool-data whitelist, CSV
-export), the Guzzle transport over a mock handler, plus the tool handler, prompt
-builder and redaction - no network.
+export, pseudonymized turns), the Guzzle transport over a mock handler, plus the
+tool handler, prompt builder, redaction and pseudonymization - no network.

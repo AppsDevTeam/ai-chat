@@ -32,7 +32,7 @@
     "symfony/cache": "^6.4 || ^7.0"
   },
   "suggest": {
-    "guzzlehttp/guzzle": "For ADT\\AiChat\\Client\\GuzzleManagedAgentsClient, the default transport",
+    "guzzlehttp/guzzle": "For ADT\\AiChat\\Client\\GuzzleManagedAgentsClient, the default transport, and ADT\\AiChat\\Pseudonymization\\OpenAiCompatiblePiiDetector",
     "adt/background-queue": "For ADT\\AiChat\\Dispatch\\BackgroundQueueMessageDispatcher",
     "nette/http": "For ADT\\AiChat\\AttachmentUpload::fromNetteFileUpload()"
   },

@@ -94,6 +94,7 @@ const DEFAULT_LABELS = {
 	errorUnknown: 'An unexpected error occurred. Please try again.',
 	errorTooManyFiles: 'You can attach at most {max} files per message.',
 	errorFileTooLarge: 'File "{name}" is too large. The limit is {max} MB.',
+	sentContent: 'Personal data was hidden from the AI - show what the AI received',
 	model: 'Model',
 	effort: 'Thinking',
 	modelHint: 'Model and thinking depth for the next message. Switching them within a conversation starts the assistant over from the transcript.',
@@ -125,6 +126,7 @@ const DEFAULT_ICONS = {
 	error: 'fa-solid fa-triangle-exclamation',
 	spinner: 'fa-solid fa-spinner fa-spin',
 	welcome: 'fa-solid fa-comments',
+	sentContent: 'fa-solid fa-shield-halved',
 	rateUp: 'fa-solid fa-thumbs-up',
 	rateDown: 'fa-solid fa-thumbs-down',
 	stop: 'fa-solid fa-stop',
@@ -1173,6 +1175,14 @@ export class AiChat {
 			this.hasReply = true;
 		}
 		const item = el('div', { class: 'ai-chat__message ai-chat__message--' + author });
+
+		// The question as the AI received it (personal data replaced with anchors), plain text only
+		if (author === 'ai' && message.sent_content) {
+			item.append(el('details', { class: 'ai-chat__sent' }, [
+				el('summary', {}, [icon(this.icons.sentContent), ' ' + this.labels.sentContent]),
+				el('div', { class: 'ai-chat__sent-text' }, [message.sent_content]),
+			]));
+		}
 		const bubble = el('div', { class: 'ai-chat__bubble ai-chat__bubble--' + author });
 
 		if (author === 'user' && message.sender?.name && (!message.sender.self || message.sender.owner === false)) {

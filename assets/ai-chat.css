@@ -12,6 +12,9 @@
 	--ai-chat-active-bg: #e6f6f7;
 	--ai-chat-focus-ring: rgba(0, 170, 179, 0.15);
 	--ai-chat-sidebar-width: 280px;
+	--ai-chat-muted: #6b7375;
+	--ai-chat-success: #198754;
+	--ai-chat-sunken-bg: #f3f5f5;
 }
 
 /* The widget toggles parts with the hidden attribute; display rules must not win. */
@@ -265,6 +268,32 @@
 	display: flex;
 	flex-direction: column;
 	align-items: flex-start;
+}
+
+/* The question as the AI received it (pseudonymized), collapsed above the reply. */
+.ai-chat__sent {
+	margin-bottom: 6px;
+	font-size: 13px;
+	color: var(--ai-chat-muted);
+}
+
+.ai-chat__sent summary {
+	cursor: pointer;
+	user-select: none;
+}
+
+.ai-chat__sent summary .fa-shield-halved {
+	color: var(--ai-chat-success);
+}
+
+.ai-chat__sent-text {
+	margin-top: 4px;
+	padding: 6px 10px;
+	border-radius: 8px;
+	background: var(--ai-chat-sunken-bg);
+	color: #1a1a1a;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
 
 .ai-chat__message--error {

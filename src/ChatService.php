@@ -10,6 +10,9 @@ use ADT\AiChat\Entity\ConversationInterface;
 use ADT\AiChat\Entity\MessageInterface;
 use ADT\AiChat\Exception\AiChatException;
 use ADT\AiChat\Exception\TurnTimeoutException;
+use ADT\AiChat\Pseudonymization\PiiCheckListener;
+use ADT\AiChat\Pseudonymization\PiiCheckUnavailableException;
+use ADT\AiChat\Pseudonymization\Pseudonymizer;
 use ADT\DoctrineAnonymization\ReadOnlyQueryExecutor;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -22,13 +25,17 @@ use Psr\Log\LoggerInterface;
  *
  *   web request:  enqueueMessage()       - rate limit, upload attachments, store
  *                                          the user message, hand off to background
- *   worker:       processQueuedMessage() - run the turn, redact, store the reply
+ *   worker:       processQueuedMessage() - pseudonymize the user text, run the
+ *                                          turn, redact, store the reply
  *
  * Conversations belong to an owner - an association (or a plain column) of the
  * conversation entity named by {@see ChatOptions::$ownerField}. Everything that
  * takes an owner scopes the data to it, so a foreign conversation reads as "not
  * found". Who may look at whose conversations is the caller's decision.
  *
+ * With a {@see Pseudonymizer} the user's text goes to the AI with anchors instead
+ * of personal data, the stored reply gets the real values back and remembers what
+ * the AI received ({@see MessageInterface::getSentContent()}).
  * With {@see ChatOptions::$senderField} other users may write into a conversation
  * too: every user message remembers its sender and the rate limit counts per sender.
  */
@@ -51,6 +58,8 @@ class ChatService
 		private readonly ChatOptions $options,
 		private readonly AiChatOptions $turnOptions = new AiChatOptions(),
 		private readonly ?LoggerInterface $logger = null,
+		private readonly ?Pseudonymizer $pseudonymizer = null,
+		private readonly ?PiiCheckListener $piiCheckListener = null,
 	) {
 	}
 
@@ -367,6 +376,22 @@ class ChatService
 			. "\n</conversation_history>";
 	}
 
+	/**
+	 * The transcript for a new session; with a pseudonymizer it goes through it too -
+	 * the stored messages hold the real values, the values get their existing anchors.
+	 *
+	 * @throws PiiCheckUnavailableException
+	 */
+	private function buildHistoryForAi(ConversationInterface $conversation): string
+	{
+		$history = $this->buildHistory($conversation);
+		if ($history === '' || $this->pseudonymizer === null) {
+			return $history;
+		}
+
+		return $this->pseudonymizer->pseudonymize($conversation, $history)->forAi;
+	}
+
 	private function formatHistoryMessage(MessageInterface $message): string
 	{
 		if ($message->getAuthor() === MessageInterface::AUTHOR_USER) {
@@ -521,10 +546,12 @@ class ChatService
 		try {
 			$this->runConversationTurn($conversation, $userMessage, $attachments);
 		} catch (\Throwable $e) {
-			if ($e instanceof TurnTimeoutException) {
+			if ($e instanceof TurnTimeoutException || $e instanceof PiiCheckUnavailableException) {
 				// An exhausted turn budget is a deliberate safety stop against a runaway
-				// agent, not an application failure.
-				$this->logger?->warning(sprintf('AI chat conversation %s: %s', $conversationId, $e->getMessage()), ['exception' => $e]);
+				// agent, an unavailable personal data check a deliberate stop of the
+				// message - not application failures.
+				$reason = $e instanceof PiiCheckUnavailableException ? $e->getReason() : $e->getMessage();
+				$this->logger?->warning(sprintf('AI chat conversation %s: %s', $conversationId, $reason), ['exception' => $e]);
 			} else {
 				$this->logger?->error($e->getMessage(), ['exception' => $e]);
 			}
@@ -541,19 +568,33 @@ class ChatService
 
 	/**
 	 * One turn through the engine (session, polling, tool round-trips); the reply is
-	 * redacted and stored. A turn the user stopped ({@see cancelTurn()}) is stored as
-	 * an interrupted reply with what the agent managed - not as an error - and the
-	 * next message continues in the same session.
+	 * redacted and stored. With a pseudonymizer the user text goes to the AI
+	 * pseudonymized - nothing goes when the required check does not run. A turn the
+	 * user stopped ({@see cancelTurn()}) is stored as an interrupted reply with what
+	 * the agent managed - not as an error - and the next message continues in the
+	 * same session.
 	 *
 	 * @param list<array{fileId: string, mediaType: string, filename?: string}> $attachments
 	 * @throws AiChatException
+	 * @throws PiiCheckUnavailableException
 	 */
 	public function runConversationTurn(ConversationInterface $conversation, string $userMessage, array $attachments = []): MessageInterface
 	{
+		$pseudonymized = null;
+		if ($this->pseudonymizer !== null) {
+			try {
+				$pseudonymized = $this->pseudonymizer->pseudonymize($conversation, $userMessage);
+			} catch (PiiCheckUnavailableException $e) {
+				$this->piiCheckListener?->unavailable($conversation, $e);
+				throw $e;
+			}
+			$this->piiCheckListener?->checked($conversation, $pseudonymized);
+		}
+
 		$modelChoice = $this->getModelChoice($conversation);
 		$result = $this->getRunner()->run(
 			$conversation,
-			$userMessage,
+			$pseudonymized?->forAi ?? $userMessage,
 			// Persisted as soon as it changes, so a crashed turn resumes against the
 			// right (new) session instead of the stuck old one.
 			fn(?string $sessionId) => $this->em->flush(),
@@ -561,7 +602,7 @@ class ChatService
 				static fn(array $a): Attachment => new Attachment((string) $a['fileId'], (string) $a['mediaType'], (string) ($a['filename'] ?? '')),
 				$attachments,
 			),
-			fn(): string => $this->buildHistory($conversation),
+			fn(): string => $this->buildHistoryForAi($conversation),
 			$modelChoice['model'] ?? null,
 			$modelChoice['effort'] ?? null,
 			new ConversationTurnMonitor($this->em, $conversation),
@@ -581,6 +622,19 @@ class ChatService
 			return $entry;
 		}, $result->toolData);
 
+		// After the filter: it would redact the real e-mails and phones restored here
+		if ($this->pseudonymizer !== null) {
+			$text = $this->pseudonymizer->restore($conversation, $text);
+			$toolData = array_map(function (array $entry) use ($conversation): array {
+				if (($entry['tool_name'] ?? '') === 'subagent') {
+					$entry['tool_input']['task'] = $this->pseudonymizer->restore($conversation, (string) ($entry['tool_input']['task'] ?? ''));
+					$entry['tool_result']['report'] = $this->pseudonymizer->restore($conversation, (string) ($entry['tool_result']['report'] ?? ''));
+				}
+
+				return $entry;
+			}, $toolData);
+		}
+
 		$reply = $this->addMessage(
 			$conversation,
 			$text,
@@ -590,6 +644,7 @@ class ChatService
 			$result->tokensOutput ?: null,
 			interrupted: $result->interrupted,
 		);
+		$reply->setSentContent($pseudonymized?->replaced);
 
 		$conversation->setUpdated(new \DateTimeImmutable());
 		$this->em->flush();

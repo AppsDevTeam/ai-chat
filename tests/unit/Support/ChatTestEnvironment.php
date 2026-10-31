@@ -11,6 +11,7 @@ use ADT\AiChat\ChatService;
 use ADT\AiChat\Http\ChatEndpoint;
 use ADT\AiChat\PiiResponseFilter;
 use ADT\AiChat\PiiValueCollector;
+use ADT\AiChat\Pseudonymization\Pseudonymizer;
 use ADT\AiChat\SystemPromptBuilder;
 use ADT\AiChat\Tests\Support\Entity\TestAgent;
 use ADT\AiChat\Tests\Support\Entity\TestConversation;
@@ -38,10 +39,14 @@ final class ChatTestEnvironment
 	public readonly AgentProvisioner $provisioner;
 	public readonly ChatService $chat;
 	public readonly ChatEndpoint $endpoint;
+	public readonly RecordingPiiCheckListener $piiCheckListener;
 
 	private int $scriptedTurns = 0;
 
-	public function __construct(?ChatOptions $options = null)
+	/**
+	 * @param (\Closure(EntityManager): Pseudonymizer)|null $pseudonymizer
+	 */
+	public function __construct(?ChatOptions $options = null, ?\Closure $pseudonymizer = null)
 	{
 		$paths = [__DIR__ . '/Entity'];
 		$config = method_exists(ORMSetup::class, 'createAttributeMetadataConfig')
@@ -68,6 +73,7 @@ final class ChatTestEnvironment
 			TestAgent::class,
 		);
 		$this->provisioner = $provisioner;
+		$this->piiCheckListener = new RecordingPiiCheckListener();
 
 		$this->chat = new ChatService(
 			$this->em,
@@ -80,6 +86,8 @@ final class ChatTestEnvironment
 			new PiiValueCollector(new PersonalDataColumns($this->em, new AnonymizationPolicy())),
 			$options ?? new ChatOptions(TestConversation::class, TestMessage::class, ownerField: 'owner'),
 			new AiChatOptions(0, 0.2, 5),
+			pseudonymizer: $pseudonymizer !== null ? $pseudonymizer($this->em) : null,
+			piiCheckListener: $this->piiCheckListener,
 		);
 
 		$this->endpoint = new ChatEndpoint($this->chat, $this->queryExecutor);

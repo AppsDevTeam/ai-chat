@@ -308,6 +308,8 @@ class ChatEndpoint
 			'model' => $message->getModel(),
 			'effort' => $message->getEffort(),
 			'error' => $message->isError(),
+			// What the AI received instead of the question (anchors), shown above the reply
+			'sent_content' => $message->isError() ? null : $message->getSentContent(),
 			'interrupted' => $message->isInterrupted(),
 			'created' => $message->getCreated()->format(DATE_ATOM),
 		];
