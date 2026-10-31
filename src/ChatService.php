@@ -250,7 +250,13 @@ class ChatService
 	 * The window is the one of the conversation's model ({@see ModelSelection}), or
 	 * {@see ChatOptions::$contextWindowTokens} when it has none.
 	 *
-	 * @return array{used: int, window: int, percent: int}
+	 * With model selection it also carries the conversation's model and effort and
+	 * `historyTokens` - an estimate of the context a new session would start with
+	 * (switching the model in the widget drops the session, the transcript follows):
+	 * the input of the first reply (system prompt, tools) plus the transcript. The
+	 * widget measures the gauge against the selected model with it.
+	 *
+	 * @return array{used: int, window: int, percent: int, model?: ?string, effort?: ?string, historyTokens?: int}
 	 */
 	public function getContextUsage(ConversationInterface $conversation): array
 	{
@@ -268,11 +274,36 @@ class ChatService
 		$used = (int) ($row['tokensInput'] ?? 0);
 		$window = $this->options->modelSelection->getContextWindow($conversation->getModel(), $this->options->contextWindowTokens);
 
-		return [
+		$usage = [
 			'used' => $used,
 			'window' => $window,
 			'percent' => $window > 0 ? min(100, (int) round($used / $window * 100)) : 0,
 		];
+
+		if ($used > 0 && $this->options->modelSelection->isEnabled()) {
+			$usage['model'] = $conversation->getModel();
+			$usage['effort'] = $conversation->getEffort();
+			$usage['historyTokens'] = $this->estimateNewSessionTokens($conversation);
+		}
+
+		return $usage;
+	}
+
+	/** Rough token count of a new session: first reply's input + transcript (~3 chars per token). */
+	private function estimateNewSessionTokens(ConversationInterface $conversation): int
+	{
+		$row = $this->em->createQueryBuilder()
+			->select('m.tokensInput')
+			->from($this->options->messageClass, 'm')
+			->where('m.' . $this->options->conversationField . ' = :conversation')
+			->andWhere('m.tokensInput IS NOT NULL')
+			->setParameter('conversation', $conversation)
+			->orderBy('m.' . $this->messageIdField(), 'ASC')
+			->setMaxResults(1)
+			->getQuery()
+			->getOneOrNullResult();
+
+		return (int) ($row['tokensInput'] ?? 0) + (int) ceil(mb_strlen($this->buildHistory($conversation)) / 3);
 	}
 
 	/**

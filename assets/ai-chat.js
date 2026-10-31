@@ -29,7 +29,7 @@
  * The URLs are used as they are, so tokens the framework puts into them (e.g. a
  * CSRF token of signals) are kept.
  *
- * Model selection: with `modelSelection` in the config ({models: [{id, label}],
+ * Model selection: with `modelSelection` in the config ({models: [{id, label, contextWindowTokens}],
  * efforts, defaultModel, defaultEffort} - ModelSelection::toClient()) the input
  * gets a model and an effort select. The choice travels with every message and can
  * be switched within a conversation (the server then starts a new session with the
@@ -76,6 +76,7 @@ const DEFAULT_LABELS = {
 	contextOk: 'I remember the whole conversation.',
 	contextWarn: 'The conversation is getting long - I will start forgetting the beginning soon.',
 	contextFull: 'Memory is almost full, consider starting a new conversation.',
+	contextSwitch: 'With another model or effort the next message starts a new memory with the transcript of the conversation.',
 	errorConnection: 'Connection error. Please try again.',
 	errorTimeout: 'The response is taking too long. Reload the conversation later.',
 	errorUnavailable: 'The conversation is no longer available.',
@@ -327,9 +328,10 @@ export class AiChat {
 			return element;
 		};
 
-		this.modelSelect = select(this.labels.model, this.modelSelection.models.map((model) => [model.id, model.label || model.id]), this.preferredModel);
+		this.modelSelect = select(this.labels.model, this.modelSelection.models.map((model) => [model.id, modelOptionLabel(model)]), this.preferredModel);
 		this.modelSelect.addEventListener('change', () => {
 			this.preferredModel = this.modelSelect.value;
+			this.renderContextUsage();
 		});
 
 		const options = [el('label', { class: 'ai-chat__option' }, [
@@ -341,6 +343,7 @@ export class AiChat {
 			this.effortSelect = select(this.labels.effort, efforts.map((effort) => [effort, this.labels.effortLevels[effort] || effort]), this.preferredEffort);
 			this.effortSelect.addEventListener('change', () => {
 				this.preferredEffort = this.effortSelect.value;
+				this.renderContextUsage();
 			});
 			options.push(el('label', { class: 'ai-chat__option' }, [
 				el('span', { class: 'ai-chat__option-label' }, [this.labels.effort]), this.effortSelect,
@@ -364,6 +367,7 @@ export class AiChat {
 		if (this.effortSelect) {
 			this.effortSelect.value = (started ? conversation.effort ?? this.modelSelection.defaultEffort : this.preferredEffort) ?? '';
 		}
+		this.renderContextUsage();
 	}
 
 	/** "Claude Opus 5.5 · Max" of a message; '' without a model. */
@@ -1226,22 +1230,50 @@ export class AiChat {
 
 	// Context-window usage: <70 % ok, 70-90 % warning, >90 % nearly full + a CTA.
 	updateContextUsage(usage) {
+		this.contextUsage = usage;
+		this.renderContextUsage();
+	}
+
+	/**
+	 * The gauge against the selected model: its window, and once the model or effort
+	 * differs from the conversation's (the next message starts a new session with the
+	 * transcript) the estimated size of that session.
+	 */
+	renderContextUsage() {
+		const usage = this.contextUsage;
 		if (!usage || !usage.window || !usage.used) {
 			this.context.hidden = true;
 			this.contextNew.hidden = true;
 			return;
 		}
 
-		const percent = Math.max(0, Math.min(100, usage.percent || 0));
+		let used = usage.used;
+		let window = usage.window;
+		let switching = false;
+		if (this.modelOptions && this.modelSelect.value) {
+			const model = this.modelSelection.models.find((item) => item.id === this.modelSelect.value);
+			window = model?.contextWindowTokens || window;
+			switching = usage.historyTokens != null && (
+				this.modelSelect.value !== usage.model
+				|| (this.effortSelect != null && this.effortSelect.value !== (usage.effort ?? ''))
+			);
+			if (switching) {
+				used = usage.historyTokens;
+			}
+		}
+
+		const percent = Math.max(0, Math.min(100, Math.round(used / window * 100)));
 		const level = percent > 90 ? 'full' : (percent >= 70 ? 'warn' : 'ok');
 
 		this.context.hidden = false;
 		this.context.classList.remove('ai-chat__context--ok', 'ai-chat__context--warn', 'ai-chat__context--full');
 		this.context.classList.add('ai-chat__context--' + level);
-		this.context.title = `${this.labels.contextLabel}: ${usage.used} / ${usage.window} (${percent} %)`;
+		this.context.title = `${this.labels.contextLabel}: ${switching ? '~' : ''}${used} / ${window} (${percent} %)`;
 		this.contextFill.style.width = percent + '%';
-		this.contextText.textContent = this.labels['context' + level.charAt(0).toUpperCase() + level.slice(1)];
-		this.contextPercent.textContent = percent + ' %';
+		this.contextText.textContent = switching
+			? this.labels.contextSwitch
+			: this.labels['context' + level.charAt(0).toUpperCase() + level.slice(1)];
+		this.contextPercent.textContent = (switching ? '~' : '') + percent + ' %';
 		this.contextNew.hidden = level !== 'full' || this.readOnly;
 	}
 
@@ -1272,6 +1304,25 @@ export function mountAll(root = document, deps = {}) {
  * An array value of a tool result; a JSON-encoded string (the model sometimes sends
  * "rows": "[[...]]") is decoded, anything else becomes an empty list.
  */
+/** 1000000 -> "1M", 200000 -> "200k"; '' without a size. */
+export function formatTokens(tokens) {
+	if (!tokens) {
+		return '';
+	}
+
+	return tokens >= 1000000
+		? `${Math.round(tokens / 100000) / 10}M`
+		: `${Math.round(tokens / 1000)}k`;
+}
+
+/** "Claude Opus 5.5 (1M)" - the label with the context window. */
+function modelOptionLabel(model) {
+	const label = model.label || model.id;
+	const window = formatTokens(model.contextWindowTokens);
+
+	return window ? `${label} (${window})` : label;
+}
+
 export function toList(value) {
 	if (typeof value === 'string') {
 		try {

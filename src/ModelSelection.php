@@ -119,7 +119,12 @@ class ModelSelection
 
 		$models = [];
 		foreach ($this->models as $id => $model) {
-			$models[] = ['id' => (string) $id, 'label' => (string) ($model['label'] ?? $id)];
+			$models[] = [
+				'id' => (string) $id,
+				'label' => (string) ($model['label'] ?? $id),
+				// the widget shows it next to the label ("Opus 5.5 (1M)")
+				'contextWindowTokens' => isset($model['contextWindowTokens']) ? (int) $model['contextWindowTokens'] : null,
+			];
 		}
 
 		return [

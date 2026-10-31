@@ -237,7 +237,11 @@ conversation drops its session: the next turn starts a new one and sends the ear
 transcript ahead of the message (`ChatService::buildHistory()` - the texts, the SQL
 and the rendered tables and charts, the newest `ChatOptions::$historyMaxChars`).
 The same happens when an expired session is replaced. AI replies show the model
-that wrote them; the context gauge uses the window of the current model.
+that wrote them. The model select shows the context window next to the label
+(`Claude Opus 5.5 (1M)`) and the context gauge follows the selected model: its window,
+and once the model or effort differs from the conversation's, the estimated size of
+the new session (`contextUsage.historyTokens` - the first reply's input plus the
+transcript) with the `contextSwitch` label.
 
 Without models (the default) the selection is off, conversations keep a null model
 and run on the model of the agent. Only offer models that support the listed effort

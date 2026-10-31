@@ -278,6 +278,19 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->assertSame('high', $conversation->getEffort());
 	}
 
+	public function testTheWidgetGetsTheContextWindowOfEachModel(): void
+	{
+		$selection = new ModelSelection([
+			'claude-opus-5-5' => ['label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
+			'claude-haiku' => ['label' => 'Haiku'],
+		]);
+
+		$this->assertSame([
+			['id' => 'claude-opus-5-5', 'label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
+			['id' => 'claude-haiku', 'label' => 'Haiku', 'contextWindowTokens' => null],
+		], $selection->toClient()['models']);
+	}
+
 	public function testModelCanBeSwitchedWithinAConversation(): void
 	{
 		$env = $this->withModelSelection();
@@ -399,7 +412,16 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		]];
 		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
 
-		$this->assertSame(['used' => 100000, 'window' => 1000000, 'percent' => 10], $env->chat->getContextUsage($conversation));
+		$this->assertSame([
+			'used' => 100000,
+			'window' => 1000000,
+			'percent' => 10,
+			'model' => 'claude-opus-5-5',
+			'effort' => 'high',
+			// a new session (another model picked in the widget): first input + the transcript
+			'historyTokens' => 100000 + (int) ceil(mb_strlen($env->chat->buildHistory($conversation)) / 3),
+		], $env->chat->getContextUsage($conversation));
+		$this->assertStringContainsString('Assistant: Hello', $env->chat->buildHistory($conversation));
 	}
 
 	public function testRatingIsStoredAndCleared(): void
