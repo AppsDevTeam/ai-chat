@@ -182,7 +182,7 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 
 		$sent = $env->endpoint->send($alice, null, 'Hi');
 		$conversationId = $sent['conversation']['id'];
-		$this->assertSame(['name' => 'User ' . $alice->id, 'self' => true], $sent['message']['sender']);
+		$this->assertSame(['name' => 'User ' . $alice->id, 'self' => true, 'owner' => true], $sent['message']['sender']);
 
 		$env->scriptReply('Hello');
 		$env->chat->processQueuedMessage($conversationId, 'Hi');
@@ -191,13 +191,14 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		$continued = $env->endpoint->send($alice, $conversationId, 'More', sender: $bob);
 		$this->assertTrue($continued['success']);
 		$this->assertTrue($continued['message']['sender']['self']);
+		$this->assertFalse($continued['message']['sender']['owner']);
 
 		$load = $env->endpoint->load($alice, $conversationId, false, false, $bob);
 		$this->assertFalse($load['readOnly']);
 		$this->assertFalse($load['canManage']);
-		$this->assertSame(['name' => 'User ' . $alice->id, 'self' => false], $load['messages'][0]['sender']);
+		$this->assertSame(['name' => 'User ' . $alice->id, 'self' => false, 'owner' => true], $load['messages'][0]['sender']);
 		$this->assertNull($load['messages'][1]['sender']);
-		$this->assertSame(['name' => 'User ' . $bob->id, 'self' => true], $load['messages'][2]['sender']);
+		$this->assertSame(['name' => 'User ' . $bob->id, 'self' => true, 'owner' => false], $load['messages'][2]['sender']);
 
 		$this->assertTrue($env->endpoint->conversations($alice)['canManage']);
 		$this->assertFalse($env->endpoint->conversations($alice, true)['canManage']);

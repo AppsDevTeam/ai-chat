@@ -41,7 +41,8 @@
  * Access: `readOnly` hides the input, `canManage` (default: not read-only) allows
  * rating and deleting - a colleague continuing someone's conversation writes but
  * does not manage it. The server sends both with the list and the conversation.
- * User messages with `sender: {name, self}` of someone else show the name.
+ * User messages with `sender: {name, self, owner}` show the name when someone else
+ * wrote them, or when the owner of the conversation did not.
  *
  * Shareable links: with `urlParam` (e.g. "conversation") the open conversation is
  * kept in that query parameter of the page URL (history.replaceState) and a page
@@ -1057,7 +1058,7 @@ export class AiChat {
 		const item = el('div', { class: 'ai-chat__message ai-chat__message--' + author });
 		const bubble = el('div', { class: 'ai-chat__bubble ai-chat__bubble--' + author });
 
-		if (author === 'user' && message.sender && !message.sender.self && message.sender.name) {
+		if (author === 'user' && message.sender?.name && (!message.sender.self || message.sender.owner === false)) {
 			item.append(el('div', { class: 'ai-chat__sender' }, [message.sender.name]));
 		}
 
