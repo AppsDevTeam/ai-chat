@@ -153,7 +153,9 @@ class ChatEndpoint
 
 	/**
 	 * Messages newer than $afterId. The widget stops polling once an AI message
-	 * (a reply or an error) arrives, or on `success: false`.
+	 * (a reply or an error) arrives, or on `success: false`. While the reply is on its
+	 * way, `turn` carries its state ({@see ChatService::getTurnState()}): the widget
+	 * shows the subagents at work and measures its timeout from the last activity.
 	 *
 	 * @return array<string, mixed>
 	 */
@@ -167,6 +169,24 @@ class ChatEndpoint
 				'messages' => array_map(fn(MessageInterface $m): array => $this->clientMessage($m, $viewer ?? $owner), $this->chat->getMessagesAfter($conversation, $afterId)),
 				'conversation' => $this->clientConversation($conversation),
 				'contextUsage' => $this->chat->getContextUsage($conversation),
+				'turn' => $this->clientTurn($this->chat->getTurnState($conversation)),
+			];
+		});
+	}
+
+	/**
+	 * Stops the reply being worked on (the Stop button of the widget). The reply
+	 * still arrives through {@see poll()} - interrupted, with what the agent managed.
+	 * Refuse it in a read-only view.
+	 *
+	 * @return array<string, mixed>
+	 */
+	public function cancel(object|int|string $owner, int|string $conversationId): array
+	{
+		return $this->guard(function () use ($owner, $conversationId): array {
+			return [
+				'success' => true,
+				'cancelled' => $this->chat->cancelTurn($this->requireConversation($conversationId, $owner)),
 			];
 		});
 	}
@@ -290,7 +310,34 @@ class ChatEndpoint
 			'error' => $message->isError(),
 			// What the AI received instead of the question (anchors), shown above the reply
 			'sent_content' => $message->isError() ? null : $message->getSentContent(),
+			'interrupted' => $message->isInterrupted(),
 			'created' => $message->getCreated()->format(DATE_ATOM),
+		];
+	}
+
+	/**
+	 * The turn state for the widget - subagents with their name, status and number
+	 * of tool calls; their tasks stay on the server (they may quote table names).
+	 *
+	 * @param array{activity: string, cancelled: bool, progress: array<string, mixed>|null}|null $state
+	 * @return array<string, mixed>|null
+	 */
+	public function clientTurn(?array $state): ?array
+	{
+		if ($state === null) {
+			return null;
+		}
+
+		return [
+			'activity' => $state['activity'],
+			'cancelled' => $state['cancelled'],
+			'toolCalls' => (int) ($state['progress']['tool_calls'] ?? 0),
+			'subagents' => array_map(static fn(array $thread): array => [
+				'id' => (string) ($thread['id'] ?? ''),
+				'name' => (string) ($thread['name'] ?? ''),
+				'status' => (string) ($thread['status'] ?? ''),
+				'toolCalls' => (int) ($thread['tool_calls'] ?? 0),
+			], $state['progress']['threads'] ?? []),
 		];
 	}
 
@@ -299,6 +346,11 @@ class ChatEndpoint
 	 * and export metadata (token only). execute_sql / get_database_schema and ALL
 	 * tool inputs are dropped, so database, table and column names - and the SQL
 	 * itself - never reach the client.
+	 *
+	 * A subagent comes as `{type: subagent, thread, name, status, report}` - its report
+	 * is a redacted text like the reply; the results it rendered carry its `thread`,
+	 * so the widget shows them inside the subagent card. The task is left out like
+	 * every tool input.
 	 *
 	 * @param list<array<string, mixed>>|null $toolData
 	 * @return list<array<string, mixed>>
@@ -309,9 +361,18 @@ class ChatEndpoint
 		foreach ($toolData ?? [] as $entry) {
 			$result = (array) ($entry['tool_result'] ?? []);
 			$type = $result['type'] ?? null;
+			$thread = isset($entry['thread']) ? ['thread' => (string) $entry['thread']] : [];
 
-			if ($type === 'chart' || $type === 'table') {
-				$out[] = ['tool_result' => ToolHandler::normalizeRenderResult($result)];
+			if (($entry['tool_name'] ?? '') === 'subagent') {
+				$out[] = ['tool_result' => [
+					'type' => 'subagent',
+					'thread' => (string) ($entry['tool_input']['thread'] ?? ''),
+					'name' => (string) ($entry['tool_input']['name'] ?? ''),
+					'status' => (string) ($result['status'] ?? ''),
+					'report' => (string) ($result['report'] ?? ''),
+				]];
+			} elseif ($type === 'chart' || $type === 'table') {
+				$out[] = ['tool_result' => ToolHandler::normalizeRenderResult($result)] + $thread;
 			} elseif ($type === 'export') {
 				$out[] = [
 					'messageId' => $messageId,
@@ -321,7 +382,7 @@ class ChatEndpoint
 						'filename' => (string) ($result['filename'] ?? 'export.csv'),
 						'token' => (string) ($result['token'] ?? ''),
 					],
-				];
+				] + $thread;
 			}
 		}
 

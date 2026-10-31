@@ -611,4 +611,33 @@ class ChatServiceTest extends \Codeception\Test\Unit
 			$this->assertSame('aiChat.error.rateLimitMinute', $e->getTranslationKey());
 		}
 	}
+
+	public function testHeartbeatOfTheWorkerKeepsTheTurnPending(): void
+	{
+		$env = new ChatTestEnvironment(new ChatOptions(TestConversation::class, TestMessage::class, ownerField: 'owner', pendingTurnSeconds: 600));
+		$conversation = $env->chat->createConversation($env->owner());
+		$message = $env->chat->enqueueMessage($conversation, 'Hi');
+
+		// The message is older than the limit - the turn would count as lost...
+		$message->setCreated(new \DateTimeImmutable('-20 minutes'));
+		$env->em->flush();
+		$this->assertFalse($env->chat->cancelTurn($conversation));
+
+		// ...unless the worker shows signs of life.
+		$conversation->setTurnActivity(new \DateTimeImmutable('-1 minute'));
+		$env->em->flush();
+		$this->assertNotNull($env->chat->getTurnState($conversation));
+		$this->assertTrue($env->chat->cancelTurn($conversation));
+	}
+
+	public function testInterruptedReplyGoesToTheHistory(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+		$this->env->chat->enqueueMessage($conversation, 'Hi');
+		$this->env->chat->cancelTurn($conversation);
+		$this->env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+		$this->env->chat->enqueueMessage($conversation, 'Again');
+
+		$this->assertStringContainsString("User: Hi\n\n[the user stopped this reply]", $this->env->chat->buildHistory($conversation));
+	}
 }

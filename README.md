@@ -137,7 +137,7 @@ Everything taking an owner scopes the data to it - a foreign conversation reads 
 ### 4. The HTTP side and the widget
 
 `ChatEndpoint` returns the JSON payloads of the widget actions (`conversations`,
-`load`, `send`, `poll`, `delete`) and the streamed CSV of the export tool
+`load`, `send`, `poll`, `cancel`, `rate`, `delete`) and the streamed CSV of the export tool
 (`export`). Failures come back as `{success: false, error}`. Only displayable tool
 results reach the browser - SQL, schema and table names stay on the server.
 
@@ -155,7 +155,7 @@ mountAll(document, { marked, DOMPurify, Chart });
 
 ```html
 <div data-ai-chat='{"urls": {"conversations": "...", "load": "...", "send": "...",
-     "poll": "...", "delete": "...", "export": "..."}, "mode": "full"}'></div>
+     "poll": "...", "cancel": "...", "delete": "...", "export": "..."}, "mode": "full"}'></div>
 ```
 
 `mode: "single"` renders one conversation without the list (a side panel); without
@@ -206,8 +206,38 @@ $text = $piiFilter->filter($result->text, $piiValueCollector->collect($result->t
 The runner handles: ignoring pre-existing session events, executing custom tools
 and sending their results back, token accounting (window usage = last request incl.
 cache counters; output summed), a retry with a fresh session when a stale one
-refuses the message, and hard stops (`maxPolls`, `maxToolCalls`) that surface as
-`TurnTimeoutException` - which is never retried, so a message cannot be duplicated.
+refuses the message, and hard stops that surface as `TurnTimeoutException` - which
+is never retried, so a message cannot be duplicated:
+
+- `AiChatOptions::$idleTimeoutSeconds` - no new event for that long: the runner asks
+  for the session status and goes on while it is still running (a long query, a
+  thinking model), otherwise it interrupts the session and gives up;
+- `$maxTurnSeconds` - a hard cap of the whole turn;
+- `$maxToolCalls` - per thread (the main agent and every subagent).
+
+Pass a `TurnMonitor` as the last argument of `run()` to stop a turn
+(`isCancelled()`: the runner sends `user.interrupt` and returns what the agent wrote
+as `TurnResult::$interrupted`) and to receive its progress (`onProgress()`: tool
+calls and subagents). `ChatService` uses `ConversationTurnMonitor`, which reads
+`turnCancelled` and writes `turnActivity`/`turnProgress` of the conversation.
+
+### Stopping a reply and subagents
+
+`ChatEndpoint::cancel()` (the widget's `urls.cancel`) marks the running turn as
+cancelled; the worker interrupts the agent and stores what it has as a message with
+`interrupted = true` - an ordinary reply, the conversation goes on in the same
+session. The poll response carries the turn state (`turn`: activity, subagents with
+their status and number of queries); the widget restarts its time limit whenever the
+activity changes, so it only gives up on a worker that went silent.
+
+`AgentProvisioner(..., subagents: true)` makes the agent a coordinator that may
+delegate independent parts of a question to copies of itself
+(`multiagent: {type: "coordinator", agents: [{type: "self"}]}`); each copy has the
+same tools and its own context window. Subagent calls are executed by the same tool
+handler. The reply then holds a `subagent` entry per delegated thread (task and
+report, PII-filtered like the reply); the widget shows it as a collapsed card with
+the charts and tables of that thread. Subagents cost more tokens - enable them per
+tenant or deployment where the questions are broad enough.
 
 ### Model selection
 
@@ -404,6 +434,28 @@ summary of the "what the AI received" block).
 - Nothing else changes until you pass a `Pseudonymizer` to `ChatService` - see
   [Input pseudonymization](#input-pseudonymization) for its table.
 - The JS widget follows the PHP versions again (`adt-ai-chat` 0.8.0).
+
+## Upgrading to 0.11
+
+- `ManagedAgentsClient`: `createAgent()`/`updateAgent()` take `?array $multiagent`
+  (`updateAgent()` always sends it - null clears it), new `retrieveSession()`,
+  `listSessionEvents($sessionId, $limit, $page, $order)`. Own implementations must
+  follow; `GuzzleManagedAgentsClient` does.
+- `AiChatOptions`: `maxPolls` is gone - the turn ends on inactivity
+  (`idleTimeoutSeconds`, default 300) or the cap (`maxTurnSeconds`, default 3600);
+  `interruptGraceSeconds` is how long a stopped turn waits for the session to settle.
+  The constructor is `(pollIntervalMicroseconds, idleTimeoutSeconds, maxToolCalls,
+  systemPromptMaxLength, maxTurnSeconds, interruptGraceSeconds)` - update positional
+  arguments.
+- New columns (migration in your project): conversation `turn_activity`,
+  `turn_progress`, `turn_cancelled`, message `interrupted` (bool, default false).
+  `turn_progress` holds subagent tasks - it is marked for anonymization.
+- `ChatOptions::$pendingTurnSeconds` counts from the last activity of the worker,
+  not from the message - keep it above `idleTimeoutSeconds`.
+- New endpoint action `cancel` (`urls.cancel` of the widget, labels `stop`,
+  `stopping`, `interrupted`, `subagent`, `subagentStatus`, `toolCalls`).
+- Long sessions: events are read newest first with paging, so turns beyond the
+  first 1000 events of a session are no longer missed.
 
 ## Upgrading to 0.10
 

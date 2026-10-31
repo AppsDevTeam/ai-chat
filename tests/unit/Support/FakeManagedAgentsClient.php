@@ -48,14 +48,48 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 	/** Fail agent creation and updates (e.g. an invalid API key). */
 	public bool $failAgentCalls = false;
 
+	/** @var list<array<string, mixed>|null> the multiagent field of every created or updated agent */
+	public array $agentMultiagent = [];
+
+	/** @var list<string> statuses returned by retrieveSession() one by one; then "idle" */
+	public array $sessionStatuses = [];
+
+	public int $retrieveCalls = 0;
+
+	/** Page size cap of listSessionEvents(), to exercise paging. */
+	public int $maxPageSize = 1000;
+
+	/** @var list<array{limit: int, page: ?string, order: ?string}> */
+	public array $listRequests = [];
+
 	private bool $turnStarted = false;
 
 	private int $released = 0;
 
 	private int $sessionCounter = 0;
 
-	public function createAgent(string $name, string $systemPrompt, array $tools): array
+	/**
+	 * Scripts the next turn: the events released so far become history (as in a
+	 * real session) and the new frames wait for the next user message.
+	 *
+	 * @param list<list<array<string, mixed>>> $frames
+	 */
+	public function script(array $frames): void
 	{
+		if ($this->turnStarted) {
+			for ($i = 0; $i < $this->released; $i++) {
+				$this->history = array_merge($this->history, $this->frames[$i]);
+			}
+		}
+
+		$this->frames = $frames;
+		$this->released = 0;
+		$this->turnStarted = false;
+	}
+
+	public function createAgent(string $name, string $systemPrompt, array $tools, ?array $multiagent = null): array
+	{
+		$this->agentMultiagent[] = $multiagent;
 		if ($this->failAgentCalls) {
 			throw new \RuntimeException('401 invalid x-api-key (test)');
 		}
@@ -64,8 +98,9 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 		return ['id' => 'agent_fake', 'version' => 1];
 	}
 
-	public function updateAgent(string $agentId, string $systemPrompt, array $tools): array
+	public function updateAgent(string $agentId, string $systemPrompt, array $tools, ?array $multiagent = null): array
 	{
+		$this->agentMultiagent[] = $multiagent;
 		if ($this->failAgentCalls) {
 			throw new \RuntimeException('401 invalid x-api-key (test)');
 		}
@@ -115,6 +150,13 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 		return ['type' => 'ok'];
 	}
 
+	public function retrieveSession(string $sessionId): array
+	{
+		$this->retrieveCalls++;
+
+		return ['id' => $sessionId, 'status' => array_shift($this->sessionStatuses) ?? 'idle'];
+	}
+
 	public function uploadFile(string $filename, string $contents, string $mediaType): array
 	{
 		return [
@@ -125,24 +167,36 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 		];
 	}
 
-	public function listSessionEvents(string $sessionId, int $limit = 1000, ?int $page = null): array
+	public function listSessionEvents(string $sessionId, int $limit = 1000, ?string $page = null, ?string $order = null): array
 	{
 		$this->listCalls++;
+		$this->listRequests[] = ['limit' => $limit, 'page' => $page, 'order' => $order];
 
 		// Before a user message is delivered only the history exists - frames are
-		// the events of the running turn. This also keeps collectEventIds() of a
-		// RETRY from consuming the reply frames prematurely.
-		if (!$this->turnStarted) {
-			return ['data' => $this->history];
+		// the events of the running turn. This also keeps the snapshot of a RETRY
+		// from consuming the reply frames prematurely. A frame is released per first
+		// page only, so paging back reads a stable list.
+		if ($this->turnStarted && $page === null) {
+			$this->released = min($this->released + 1, count($this->frames));
 		}
-
-		$this->released = min($this->released + 1, count($this->frames));
 
 		$data = $this->history;
-		for ($i = 0; $i < $this->released; $i++) {
-			$data = array_merge($data, $this->frames[$i]);
+		if ($this->turnStarted) {
+			for ($i = 0; $i < $this->released; $i++) {
+				$data = array_merge($data, $this->frames[$i]);
+			}
 		}
 
-		return ['data' => $data];
+		if ($order === 'desc') {
+			$data = array_reverse($data);
+		}
+
+		$offset = (int) $page;
+		$limit = min($limit, $this->maxPageSize);
+
+		return [
+			'data' => array_slice($data, $offset, $limit),
+			'next_page' => $offset + $limit < count($data) ? (string) ($offset + $limit) : null,
+		];
 	}
 }

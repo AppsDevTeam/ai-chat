@@ -11,19 +11,24 @@ class TurnResult
 {
 	/**
 	 * @param string $text concatenated text blocks of the agent reply
-	 * @param list<array{tool_name: string, tool_input: array<string, mixed>, tool_result: array<string, mixed>}> $toolData
-	 *        every tool call made during the turn, with its input and result
+	 * @param list<array{tool_name: string, tool_input: array<string, mixed>, tool_result: array<string, mixed>, thread?: string}> $toolData
+	 *        every tool call made during the turn, with its input and result; calls of
+	 *        a subagent carry its `thread` id, and every subagent has an entry of its
+	 *        own (tool_name `subagent`: input = thread, name, task; result = status, report)
 	 * @param int $tokensInput size of the context window used by the LAST request
 	 *        of the turn (input + cache read + cache creation) - every request
 	 *        resends the whole growing context, so the last one equals the current
 	 *        window usage; summing them would overcount ~N times
 	 * @param int $tokensOutput total output tokens of the turn (for billing)
+	 * @param bool $interrupted the user stopped the turn; text and tool data are
+	 *        what the agent managed until then
 	 */
 	public function __construct(
 		public readonly string $text,
 		public readonly array $toolData,
 		public readonly int $tokensInput,
 		public readonly int $tokensOutput,
+		public readonly bool $interrupted = false,
 	) {
 	}
 }

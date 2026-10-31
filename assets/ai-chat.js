@@ -25,7 +25,7 @@
  *            conversationId the first message starts a new conversation
  *
  * The server side is ADT\AiChat\Http\ChatEndpoint. Requests: GET for reading
- * (conversations, load, poll), POST FormData for changes (send, create, delete).
+ * (conversations, load, poll), POST FormData for changes (send, cancel, rate, delete).
  * The URLs are used as they are, so tokens the framework puts into them (e.g. a
  * CSRF token of signals) are kept.
  *
@@ -34,6 +34,16 @@
  * gets a model and an effort select. The choice travels with every message and can
  * be switched within a conversation (the server then starts a new session with the
  * transcript); AI replies show the model that wrote them.
+ *
+ * Stopping: with `urls.cancel` the send button turns into a stop button while a
+ * reply is being written. The worker stops the agent and stores what it has as an
+ * interrupted reply; the conversation goes on in the same session.
+ *
+ * Progress: polling reads the turn state (`turn` of the poll response). Subagents
+ * the agent delegated to show live under the input (name, status, queries); in the
+ * reply each one is a collapsed card with its report and the charts and tables it
+ * produced, rendered on expand. A turn only times out after `pollMaxMs` without any
+ * sign of activity from the worker, so a long but busy turn keeps the spinner.
  *
  * Rating: with `urls.rate` the owner can rate a conversation that has a reply
  * (thumbs up / down + an optional comment); a read-only view shows the rating.
@@ -97,6 +107,12 @@ const DEFAULT_LABELS = {
 	rateSave: 'Send',
 	rateThanks: 'Thank you for your feedback.',
 	rated: 'Rated',
+	stop: 'Stop the reply',
+	stopping: 'Stopping...',
+	interrupted: 'Stopped by the user',
+	subagent: 'Subagent',
+	subagentStatus: { running: 'Working', rescheduling: 'Waiting', idle: 'Done', terminated: 'Stopped' },
+	toolCalls: 'queries: {count}',
 };
 
 const DEFAULT_ICONS = {
@@ -113,6 +129,8 @@ const DEFAULT_ICONS = {
 	sentContent: 'fa-solid fa-shield-halved',
 	rateUp: 'fa-solid fa-thumbs-up',
 	rateDown: 'fa-solid fa-thumbs-down',
+	stop: 'fa-solid fa-stop',
+	subagent: 'fa-solid fa-robot',
 };
 
 const DEFAULTS = {
@@ -128,7 +146,8 @@ const DEFAULTS = {
 	maxAttachments: 4,
 	maxAttachmentBytes: 10 * 1024 * 1024,
 	pollIntervalMs: 2000,
-	// A turn may run for minutes in the worker; the limit only stops an endless spinner.
+	// How long the spinner waits without any sign of activity from the worker (the
+	// worker beats at least every few minutes while the agent works); then it gives up.
 	pollMaxMs: 660000,
 	// Full mode stretches to the bottom of the window; off when a parent sizes the chat.
 	fitViewport: null,
@@ -173,6 +192,7 @@ export class AiChat {
 		this.urls = config.urls || {};
 		this.labels = { ...DEFAULT_LABELS, ...(config.labels || {}) };
 		this.labels.effortLevels = { ...DEFAULT_LABELS.effortLevels, ...(config.labels?.effortLevels || {}) };
+		this.labels.subagentStatus = { ...DEFAULT_LABELS.subagentStatus, ...(config.labels?.subagentStatus || {}) };
 		this.icons = { ...DEFAULT_ICONS, ...(config.icons || {}) };
 		this.deps = {
 			marked: deps.marked ?? window.marked,
@@ -187,11 +207,14 @@ export class AiChat {
 		this.conversationId = this.config.conversationId ?? this.readUrlConversation();
 		this.params = { ...(this.config.params || {}) };
 		this.loading = false;
+		this.turnRunning = false;
+		this.stopping = false;
 		this.files = [];
 		this.charts = [];
 		this.pollTimer = null;
 		this.pollAttempts = 0;
-		this.pollStartedAt = 0;
+		this.pollActivity = null;
+		this.pollActiveAt = 0;
 		this.modelSelection = this.config.modelSelection?.models?.length ? this.config.modelSelection : null;
 		this.preferredModel = this.modelSelection?.defaultModel ?? null;
 		this.preferredEffort = this.modelSelection?.defaultEffort ?? null;
@@ -292,7 +315,12 @@ export class AiChat {
 		this.fileList = el('div', { class: 'ai-chat__files', hidden: true });
 		this.buildModelOptions();
 		this.buildRating();
-		this.loadingBox = el('div', { class: 'ai-chat__loading', hidden: true }, [icon(this.icons.spinner), ' ' + this.labels.loading]);
+		this.loadingText = el('span', { class: 'ai-chat__loading-text' }, [this.labels.loading]);
+		this.subagentList = el('ul', { class: 'ai-chat__subagents', hidden: true });
+		this.loadingBox = el('div', { class: 'ai-chat__loading', hidden: true }, [
+			el('div', { class: 'ai-chat__loading-status' }, [icon(this.icons.spinner), ' ', this.loadingText]),
+			this.subagentList,
+		]);
 
 		// A real form: Enter in assistive technologies submits it, and hosts like the
 		// fancyadmin side panel recognise their content by it.
@@ -306,7 +334,11 @@ export class AiChat {
 		this.form.addEventListener('submit', (e) => {
 			e.preventDefault();
 			e.stopPropagation();
-			this.sendMessage();
+			if (this.turnRunning) {
+				this.cancelTurn();
+			} else {
+				this.sendMessage();
+			}
 		});
 
 		root.append(el('div', { class: 'ai-chat__main' }, [
@@ -529,12 +561,52 @@ export class AiChat {
 		}
 	}
 
-	setLoading(loading) {
+	/**
+	 * Locks the input. With `turn` a reply is being written: the send button turns
+	 * into a stop button (with `urls.cancel`).
+	 */
+	setLoading(loading, turn = false) {
 		this.loading = loading;
+		this.turnRunning = loading && turn;
 		this.loadingBox.hidden = !loading;
 		this.textarea.disabled = loading;
-		this.sendButton.disabled = loading;
 		this.attachButton.disabled = loading;
+
+		const stop = this.turnRunning && !!this.urls.cancel;
+		const label = stop ? this.labels.stop : this.labels.send;
+		this.sendButton.disabled = loading && !stop;
+		this.sendButton.classList.toggle('ai-chat__send-btn--stop', stop);
+		this.sendButton.title = label;
+		this.sendButton.setAttribute('aria-label', label);
+		this.sendButton.replaceChildren(icon(stop ? this.icons.stop : this.icons.send));
+
+		if (!this.turnRunning) {
+			this.stopping = false;
+			this.renderTurn(null);
+		}
+	}
+
+	/** The loading text and the live subagents of the running turn. */
+	renderTurn(turn) {
+		const stopping = this.stopping || !!turn?.cancelled;
+		this.loadingText.textContent = stopping ? this.labels.stopping : this.labels.loading;
+		if (stopping && this.turnRunning) {
+			this.sendButton.disabled = true;
+		}
+
+		const subagents = turn?.subagents || [];
+		this.subagentList.hidden = !subagents.length;
+		this.subagentList.replaceChildren(...subagents.map((subagent) => el('li', { class: 'ai-chat__subagent ai-chat__subagent--' + subagent.status }, [
+			icon(this.icons.subagent), ' ',
+			el('span', { class: 'ai-chat__subagent-name' }, [subagent.name || this.labels.subagent]),
+			el('span', { class: 'ai-chat__subagent-status' }, [this.subagentStatusText(subagent.status, subagent.toolCalls)]),
+		])));
+	}
+
+	subagentStatusText(status, toolCalls) {
+		const text = this.labels.subagentStatus[status] || status || '';
+
+		return [text, toolCalls ? format(this.labels.toolCalls, { count: toolCalls }) : ''].filter(Boolean).join(' · ');
 	}
 
 	focusInput() {
@@ -766,7 +838,6 @@ export class AiChat {
 		// processing it (e.g. after a page reload) - resume polling.
 		const last = messages[messages.length - 1];
 		if (last && last.author === 'user' && !this.readOnly) {
-			this.setLoading(true);
 			this.startPolling(last.id);
 		} else {
 			this.focusInput();
@@ -865,12 +936,43 @@ export class AiChat {
 		this.startPolling(data.lastMessageId);
 	}
 
+	/**
+	 * Asks the worker to stop the reply. Polling goes on: the worker stores what the
+	 * agent wrote so far as an interrupted reply, and that ends the turn.
+	 */
+	async cancelTurn() {
+		if (!this.turnRunning || this.stopping || !this.urls.cancel || !this.conversationId) {
+			return;
+		}
+
+		const conversationId = this.conversationId;
+		this.stopping = true;
+		this.renderTurn(null);
+
+		const data = await this.request('POST', this.urls.cancel, { conversationId })
+			.catch(() => ({ success: false, error: this.labels.errorConnection }));
+
+		if (String(this.conversationId) !== String(conversationId) || !this.turnRunning) {
+			return;
+		}
+
+		if (!data.success) {
+			this.stopping = false;
+			this.sendButton.disabled = false;
+			this.renderTurn(null);
+			this.appendError(data.error || this.labels.errorUnknown);
+			this.scrollToBottom();
+		}
+	}
+
 	startPolling(afterId) {
 		const conversationId = this.conversationId;
 
 		this.stopPolling();
+		this.setLoading(true, true);
 		this.pollAttempts = 0;
-		this.pollStartedAt = Date.now();
+		this.pollActivity = null;
+		this.pollActiveAt = Date.now();
 
 		const poll = async () => {
 			if (String(this.conversationId) !== String(conversationId)) {
@@ -884,7 +986,7 @@ export class AiChat {
 				return;
 			}
 
-			if (Date.now() - this.pollStartedAt > this.config.pollMaxMs) {
+			if (Date.now() - this.pollActiveAt > this.config.pollMaxMs) {
 				this.setLoading(false);
 				this.appendError(this.labels.errorTimeout);
 				this.scrollToBottom();
@@ -911,6 +1013,15 @@ export class AiChat {
 				this.appendError(data.error || this.labels.errorUnavailable);
 				this.scrollToBottom();
 				return;
+			}
+
+			// Any new sign of life from the worker restarts the time limit.
+			if (data?.turn) {
+				if (data.turn.activity !== this.pollActivity) {
+					this.pollActivity = data.turn.activity;
+					this.pollActiveAt = Date.now();
+				}
+				this.renderTurn(data.turn);
 			}
 
 			// Messages of other senders may arrive meanwhile - show them, and stop only
@@ -1099,16 +1210,29 @@ export class AiChat {
 			item.append(bubble);
 		}
 
-		for (const entry of message.tool_data || []) {
+		if (message.interrupted) {
+			item.append(el('div', { class: 'ai-chat__interrupted' }, [icon(this.icons.stop), ' ' + this.labels.interrupted]));
+		}
+
+		// Outputs of a subagent go into its card, the rest into the reply.
+		const toolData = message.tool_data || [];
+		const cards = new Map();
+		for (const entry of toolData) {
+			if (entry.tool_result?.type === 'subagent' && entry.tool_result.thread) {
+				cards.set(entry.tool_result.thread, []);
+			}
+		}
+
+		for (const entry of toolData) {
 			const result = entry.tool_result || {};
-			if (result.type === 'chart') {
-				item.append(this.renderChart(result));
-			} else if (result.type === 'table') {
-				item.append(this.renderTable(result));
-			} else if (result.type === 'export') {
-				const link = this.renderExport(result, entry.messageId);
-				if (link) {
-					item.append(link);
+			if (result.type === 'subagent') {
+				item.append(this.renderSubagent(result, cards.get(result.thread) || []));
+			} else if (result.thread && cards.has(result.thread)) {
+				cards.get(result.thread).push(entry);
+			} else {
+				const output = this.renderOutput(entry);
+				if (output) {
+					item.append(output);
 				}
 			}
 		}
@@ -1116,6 +1240,61 @@ export class AiChat {
 		this.messages.append(item);
 
 		return item;
+	}
+
+	/** A chart, table or export link of a tool call; null for anything else. */
+	renderOutput(entry) {
+		const result = entry.tool_result || {};
+		if (result.type === 'chart') {
+			return this.renderChart(result);
+		}
+		if (result.type === 'table') {
+			return this.renderTable(result);
+		}
+		if (result.type === 'export') {
+			return this.renderExport(result, entry.messageId);
+		}
+
+		return null;
+	}
+
+	/**
+	 * A collapsed card of a subagent: its report and outputs are rendered on the
+	 * first expand (charts need a visible canvas to measure).
+	 */
+	renderSubagent(subagent, entries) {
+		const body = el('div', { class: 'ai-chat__subagent-body' });
+		const card = el('details', { class: 'ai-chat__subagent-card ai-chat__subagent-card--' + subagent.status }, [
+			el('summary', { class: 'ai-chat__subagent-summary' }, [
+				icon(this.icons.subagent), ' ',
+				el('span', { class: 'ai-chat__subagent-name' }, [subagent.name || this.labels.subagent]),
+				el('span', { class: 'ai-chat__subagent-status' }, [this.subagentStatusText(subagent.status, 0)]),
+			]),
+			body,
+		]);
+
+		let rendered = false;
+		card.addEventListener('toggle', () => {
+			if (!card.open || rendered) {
+				return;
+			}
+			rendered = true;
+
+			if ((subagent.report || '').trim() !== '') {
+				const report = el('div', { class: 'ai-chat__subagent-report' });
+				this.renderMarkdown(report, subagent.report);
+				body.append(report);
+			}
+
+			for (const entry of entries) {
+				const output = this.renderOutput(entry);
+				if (output) {
+					body.append(output);
+				}
+			}
+		});
+
+		return card;
 	}
 
 	appendError(text) {

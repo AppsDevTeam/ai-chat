@@ -211,4 +211,67 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		$this->assertTrue($env->endpoint->conversations($alice)['canManage']);
 		$this->assertFalse($env->endpoint->conversations($alice, true)['canManage']);
 	}
+
+	public function testStopBeforeTheWorkerStartsEndsTheTurnAsInterrupted(): void
+	{
+		$owner = $this->env->owner();
+		$sent = $this->env->endpoint->send($owner, null, 'Long question');
+		$conversationId = $sent['conversation']['id'];
+
+		$turn = $this->env->endpoint->poll($owner, $conversationId, $sent['lastMessageId'])['turn'];
+		$this->assertFalse($turn['cancelled']);
+		$this->assertSame([], $turn['subagents']);
+
+		$this->assertTrue($this->env->endpoint->cancel($owner, $conversationId)['cancelled']);
+		$this->assertTrue($this->env->endpoint->poll($owner, $conversationId, $sent['lastMessageId'])['turn']['cancelled']);
+
+		$this->env->scriptReply('Never sent');
+		$this->env->chat->processQueuedMessage($conversationId, 'Long question');
+
+		$poll = $this->env->endpoint->poll($owner, $conversationId, $sent['lastMessageId']);
+		$this->assertCount(1, $poll['messages']);
+		$this->assertTrue($poll['messages'][0]['interrupted']);
+		$this->assertFalse($poll['messages'][0]['error']);
+		$this->assertSame('', $poll['messages'][0]['content']);
+		$this->assertNull($poll['turn']);
+		// Nothing reached the session.
+		$this->assertSame([], $this->env->client->sentEvents);
+
+		// Nothing waits any more - stopping again is a no-op and the next message goes through.
+		$this->assertFalse($this->env->endpoint->cancel($owner, $conversationId)['cancelled']);
+		$this->assertTrue($this->env->endpoint->send($owner, $conversationId, 'Shorter question')['success']);
+	}
+
+	public function testSubagentsReachTheWidgetRedactedWithTheirResults(): void
+	{
+		$owner = $this->env->owner();
+		$sent = $this->env->endpoint->send($owner, null, 'Compare branches');
+		$conversationId = $sent['conversation']['id'];
+
+		$this->env->client->script([
+			[
+				['id' => 'c1', 'type' => 'agent.thread_message_sent', 'to_session_thread_id' => 'th_a', 'to_agent_name' => 'ai-chat', 'content' => 'Revenue of Praha from table client'],
+				['id' => 't1', 'type' => 'agent.custom_tool_use', 'session_thread_id' => 'th_a', 'name' => 'render_table', 'input' => ['title' => 'Praha', 'headers' => ['Month', 'CZK'], 'rows' => '[["Jan", 100]]']],
+			],
+			[
+				['id' => 'c2', 'type' => 'agent.thread_message_received', 'from_session_thread_id' => 'th_a', 'content' => 'Praha made 100, ask jan.novak@example.com'],
+				['id' => 'c3', 'type' => 'session.thread_status_idle', 'session_thread_id' => 'th_a'],
+				['id' => 'm1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Praha leads.']]],
+				['id' => 'i1', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+			],
+		]);
+		$this->env->chat->processQueuedMessage($conversationId, 'Compare branches');
+
+		$toolData = $this->env->endpoint->poll($owner, $conversationId, $sent['lastMessageId'])['messages'][0]['tool_data'];
+
+		$this->assertCount(2, $toolData);
+		$this->assertSame('subagent', $toolData[0]['tool_result']['type']);
+		$this->assertSame('th_a', $toolData[0]['tool_result']['thread']);
+		$this->assertSame('idle', $toolData[0]['tool_result']['status']);
+		$this->assertStringNotContainsString('jan.novak@example.com', $toolData[0]['tool_result']['report']);
+		// The task (it may quote tables) stays on the server.
+		$this->assertArrayNotHasKey('task', $toolData[0]['tool_result']);
+		$this->assertSame('table', $toolData[1]['tool_result']['type']);
+		$this->assertSame('th_a', $toolData[1]['thread']);
+	}
 }

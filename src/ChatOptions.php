@@ -29,8 +29,9 @@ class ChatOptions
 	 *        conversation; null = every user message is the owner's
 	 * @param int $pendingTurnSeconds a new message is refused while the previous one
 	 *        waits for its reply - two turns must not run in one session at once. After
-	 *        this long the turn counts as lost (a killed worker) and sending is free
-	 *        again; keep it above the longest turn (AiChatOptions maxPolls x interval)
+	 *        this long without a sign of life (the message, the heartbeat of the worker)
+	 *        the turn counts as lost (a killed worker) and sending is free again; keep
+	 *        it above AiChatOptions idleTimeoutSeconds
 	 * @param int $historyMaxChars a new session of an existing conversation (a switched
 	 *        model, an expired session) gets the earlier transcript; beyond this length
 	 *        the oldest messages are left out

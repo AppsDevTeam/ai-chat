@@ -41,6 +41,8 @@ final class ChatTestEnvironment
 	public readonly ChatEndpoint $endpoint;
 	public readonly RecordingPiiCheckListener $piiCheckListener;
 
+	private int $scriptedTurns = 0;
+
 	/**
 	 * @param (\Closure(EntityManager): Pseudonymizer)|null $pseudonymizer
 	 */
@@ -83,7 +85,7 @@ final class ChatTestEnvironment
 			new PiiResponseFilter(),
 			new PiiValueCollector(new PersonalDataColumns($this->em, new AnonymizationPolicy())),
 			$options ?? new ChatOptions(TestConversation::class, TestMessage::class, ownerField: 'owner'),
-			new AiChatOptions(0, 20, 5),
+			new AiChatOptions(0, 0.2, 5),
 			pseudonymizer: $pseudonymizer !== null ? $pseudonymizer($this->em) : null,
 			piiCheckListener: $this->piiCheckListener,
 		);
@@ -103,9 +105,10 @@ final class ChatTestEnvironment
 	/** Releases a plain reply for the next turn. */
 	public function scriptReply(string $text): void
 	{
-		$this->client->frames = [
-			[['id' => 'evt_msg', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => $text]]]],
-			[['id' => 'evt_idle', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']]],
-		];
+		$turn = ++$this->scriptedTurns;
+		$this->client->script([
+			[['id' => 'evt_msg_' . $turn, 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => $text]]]],
+			[['id' => 'evt_idle_' . $turn, 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']]],
+		]);
 	}
 }

@@ -52,4 +52,22 @@ interface ConversationInterface
 	public function getRated(): ?\DateTimeImmutable;
 
 	public function setRated(?\DateTimeImmutable $rated): static;
+
+	public function getTurnActivity(): ?\DateTimeImmutable;
+
+	public function setTurnActivity(?\DateTimeImmutable $turnActivity): static;
+
+	/**
+	 * @return array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>}|null
+	 */
+	public function getTurnProgress(): ?array;
+
+	/**
+	 * @param array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>}|null $turnProgress
+	 */
+	public function setTurnProgress(?array $turnProgress): static;
+
+	public function getTurnCancelled(): ?\DateTimeImmutable;
+
+	public function setTurnCancelled(?\DateTimeImmutable $turnCancelled): static;
 }

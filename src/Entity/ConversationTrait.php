@@ -17,6 +17,9 @@ use Doctrine\ORM\Mapping as ORM;
  * user message (free text - may contain anything the user typed) and the session
  * id is an access token to the server-side conversation, so neither may appear
  * readable in the anonymized views. The rating comment is free text too.
+ *
+ * The turn* columns describe the running turn (heartbeat, progress, a stop request
+ * of the user) - the worker writes them, the widget polls them.
  */
 trait ConversationTrait
 {
@@ -55,6 +58,19 @@ trait ConversationTrait
 	#[ORM\Column(nullable: true)]
 	#[Description('Date and time when the user last rated the conversation; null when not rated.')]
 	protected ?\DateTimeImmutable $rated = null;
+
+	#[ORM\Column(name: 'turn_activity', nullable: true)]
+	#[Description('Heartbeat of the running assistant turn - when the session last produced an event; null when no turn ran since the last message.')]
+	protected ?\DateTimeImmutable $turnActivity = null;
+
+	#[ORM\Column(name: 'turn_progress', type: 'text', nullable: true)]
+	#[Anonymize(AnonymizationType::FREE_TEXT)]
+	#[Description('JSON progress of the running assistant turn: tool calls so far and the subagents with their task and status.')]
+	protected ?string $turnProgress = null;
+
+	#[ORM\Column(name: 'turn_cancelled', nullable: true)]
+	#[Description('Date and time when the user stopped the running assistant turn; null when not stopped.')]
+	protected ?\DateTimeImmutable $turnCancelled = null;
 
 	public function getTitle(): string
 	{
@@ -141,6 +157,47 @@ trait ConversationTrait
 	public function setRated(?\DateTimeImmutable $rated): static
 	{
 		$this->rated = $rated;
+		return $this;
+	}
+
+	public function getTurnActivity(): ?\DateTimeImmutable
+	{
+		return $this->turnActivity;
+	}
+
+	public function setTurnActivity(?\DateTimeImmutable $turnActivity): static
+	{
+		$this->turnActivity = $turnActivity;
+		return $this;
+	}
+
+	/**
+	 * @return array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>}|null
+	 */
+	public function getTurnProgress(): ?array
+	{
+		$decoded = $this->turnProgress !== null ? json_decode($this->turnProgress, true) : null;
+
+		return is_array($decoded) ? $decoded : null;
+	}
+
+	/**
+	 * @param array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>}|null $turnProgress
+	 */
+	public function setTurnProgress(?array $turnProgress): static
+	{
+		$this->turnProgress = $turnProgress !== null ? json_encode($turnProgress, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE) : null;
+		return $this;
+	}
+
+	public function getTurnCancelled(): ?\DateTimeImmutable
+	{
+		return $this->turnCancelled;
+	}
+
+	public function setTurnCancelled(?\DateTimeImmutable $turnCancelled): static
+	{
+		$this->turnCancelled = $turnCancelled;
 		return $this;
 	}
 }

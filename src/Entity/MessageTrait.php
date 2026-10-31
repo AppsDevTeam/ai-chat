@@ -68,6 +68,10 @@ trait MessageTrait
 	#[Description('True when the assistant turn failed and the content holds the error text.')]
 	protected bool $error = false;
 
+	#[ORM\Column(options: ['default' => false])]
+	#[Description('True when the user stopped the assistant turn; the content holds what the assistant wrote until then.')]
+	protected bool $interrupted = false;
+
 	#[ORM\Column]
 	#[Description('Date and time when the message was created.')]
 	protected \DateTimeImmutable $created;
@@ -190,6 +194,17 @@ trait MessageTrait
 	public function setError(bool $error): static
 	{
 		$this->error = $error;
+		return $this;
+	}
+
+	public function isInterrupted(): bool
+	{
+		return $this->interrupted;
+	}
+
+	public function setInterrupted(bool $interrupted): static
+	{
+		$this->interrupted = $interrupted;
 		return $this;
 	}
 
