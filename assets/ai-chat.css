@@ -511,8 +511,88 @@
 	text-align: center;
 }
 
-.ai-chat__loading i {
+.ai-chat__loading-status i {
 	margin-right: 4px;
+}
+
+/* Stop button while a reply is being written. */
+.ai-chat__send-btn.ai-chat__send-btn--stop,
+.ai-chat__send-btn.ai-chat__send-btn--stop:hover,
+.ai-chat__send-btn.ai-chat__send-btn--stop:focus,
+.ai-chat__send-btn.ai-chat__send-btn--stop:active {
+	background-color: #fff;
+	border: 2px solid var(--ai-chat-primary);
+	color: var(--ai-chat-primary);
+}
+
+.ai-chat__send-btn--stop i {
+	font-size: 12px;
+}
+
+/* Live subagents of the running turn. */
+.ai-chat__subagents {
+	list-style: none;
+	margin: 6px 0 0;
+	padding: 0;
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	gap: 6px;
+}
+
+.ai-chat__subagent {
+	padding: 2px 10px;
+	border: 1px solid var(--ai-chat-border);
+	border-radius: 12px;
+	background: #fff;
+	font-size: 12px;
+}
+
+.ai-chat__subagent--running .ai-chat__subagent-name {
+	color: var(--ai-chat-accent);
+}
+
+.ai-chat__subagent-name {
+	font-weight: 600;
+	margin-right: 6px;
+}
+
+.ai-chat__subagent-status {
+	color: var(--ai-chat-muted, #6c757d);
+}
+
+/* A subagent card in the reply; its content is rendered on expand. */
+.ai-chat__subagent-card {
+	margin: 8px 0;
+	width: 100%;
+	background: #fff;
+	border: 1px solid var(--ai-chat-border);
+	border-radius: 8px;
+	font-size: 13px;
+}
+
+.ai-chat__subagent-summary {
+	padding: 8px 12px;
+	cursor: pointer;
+}
+
+.ai-chat__subagent-summary i {
+	color: var(--ai-chat-accent);
+}
+
+.ai-chat__subagent-body {
+	padding: 0 12px 8px;
+	border-top: 1px solid var(--ai-chat-border);
+}
+
+.ai-chat__subagent-report {
+	padding-top: 8px;
+}
+
+.ai-chat__interrupted {
+	margin: 2px 4px 0;
+	font-size: 0.75rem;
+	color: var(--ai-chat-muted, #6c757d);
 }
 
 /* One conversation without the list (side panel): the parent decides the size. */

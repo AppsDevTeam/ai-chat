@@ -106,4 +106,25 @@ class AgentProvisionerTest extends \Codeception\Test\Unit
 			TestAgent::class,
 		);
 	}
+
+	public function testSubagentsMakeTheAgentACoordinatorOfItself(): void
+	{
+		$queryExecutor = StubQueryExecutor::withTables(['client']);
+		$provisioner = new AgentProvisioner(
+			$this->env->client,
+			new SystemPromptBuilder($queryExecutor, SystemPromptBuilder::defaultTemplatePath()),
+			new ToolHandler($queryExecutor),
+			$this->env->em,
+			TestAgent::class,
+			subagents: true,
+		);
+
+		$provisioner->ensureProvisioned('schema_sub');
+
+		$this->assertSame([['type' => 'coordinator', 'agents' => [['type' => 'self']]]], $this->env->client->agentMultiagent);
+		// Switching subagents on changes the fingerprint, so existing agents get updated.
+		$withSubagents = $provisioner->findForSchema('schema_sub')?->getFingerprint();
+		$this->assertNotSame(AgentProvisioner::fingerprint('x', []), AgentProvisioner::fingerprint('x', [], $provisioner->getMultiagent()));
+		$this->assertNotNull($withSubagents);
+	}
 }

@@ -44,17 +44,17 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 	) {
 	}
 
-	public function createAgent(string $name, string $systemPrompt, array $tools): array
+	public function createAgent(string $name, string $systemPrompt, array $tools, ?array $multiagent = null): array
 	{
 		return $this->request('POST', 'agents', [
 			'name' => $name,
 			'model' => $this->model,
 			'system' => $systemPrompt,
 			'tools' => $tools,
-		]);
+		] + ($multiagent !== null ? ['multiagent' => $multiagent] : []));
 	}
 
-	public function updateAgent(string $agentId, string $systemPrompt, array $tools): array
+	public function updateAgent(string $agentId, string $systemPrompt, array $tools, ?array $multiagent = null): array
 	{
 		// The update endpoint uses an optimistic lock - the current version must be
 		// read first and sent along.
@@ -65,6 +65,7 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 			'model' => $this->model,
 			'system' => $systemPrompt,
 			'tools' => $tools,
+			'multiagent' => $multiagent,
 		]);
 	}
 
@@ -98,6 +99,11 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 		return $this->request('POST', 'sessions', $body);
 	}
 
+	public function retrieveSession(string $sessionId): array
+	{
+		return $this->request('GET', 'sessions/' . rawurlencode($sessionId));
+	}
+
 	public function sendSessionEvents(string $sessionId, array $events): array
 	{
 		return $this->request('POST', 'sessions/' . rawurlencode($sessionId) . '/events', [
@@ -105,11 +111,14 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 		]);
 	}
 
-	public function listSessionEvents(string $sessionId, int $limit = 1000, ?int $page = null): array
+	public function listSessionEvents(string $sessionId, int $limit = 1000, ?string $page = null, ?string $order = null): array
 	{
 		$query = ['limit' => $limit];
 		if ($page !== null) {
 			$query['page'] = $page;
+		}
+		if ($order !== null) {
+			$query['order'] = $order;
 		}
 
 		return $this->request('GET', 'sessions/' . rawurlencode($sessionId) . '/events', null, $query);

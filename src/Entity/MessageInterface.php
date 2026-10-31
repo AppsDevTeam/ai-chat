@@ -83,6 +83,10 @@ interface MessageInterface
 
 	public function setError(bool $error): static;
 
+	public function isInterrupted(): bool;
+
+	public function setInterrupted(bool $interrupted): static;
+
 	public function getCreated(): \DateTimeImmutable;
 
 	public function setCreated(\DateTimeImmutable $created): static;

@@ -388,6 +388,7 @@ class ChatService
 					'labels' => $result['labels'] ?? [],
 					'datasets' => $result['datasets'] ?? [],
 				], JSON_UNESCAPED_UNICODE)),
+				'subagent' => sprintf("[subagent %s] task: %s\nreport: %s", $input['name'] ?? '', $input['task'] ?? '', $entry['tool_result']['report'] ?? ''),
 				default => '',
 			};
 			if ($line !== '') {
@@ -397,6 +398,9 @@ class ChatService
 
 		if ($message->getContent() !== '') {
 			$lines[] = 'Assistant: ' . $message->getContent();
+		}
+		if ($message->isInterrupted()) {
+			$lines[] = '[the user stopped this reply]';
 		}
 
 		return implode("\n", $lines);
@@ -483,6 +487,9 @@ class ChatService
 			$conversation->setTitle($this->createTitle($userMessage !== '' ? $userMessage : $attachments[0]['filename']));
 		}
 		$conversation->setUpdated(new \DateTimeImmutable());
+		$conversation->setTurnActivity(null);
+		$conversation->setTurnProgress(null);
+		$conversation->setTurnCancelled(null);
 		$this->em->flush();
 
 		$this->dispatcher->dispatch(
@@ -534,7 +541,9 @@ class ChatService
 
 	/**
 	 * One turn through the engine (session, polling, tool round-trips); the reply is
-	 * redacted and stored.
+	 * redacted and stored. A turn the user stopped ({@see cancelTurn()}) is stored as
+	 * an interrupted reply with what the agent managed - not as an error - and the
+	 * next message continues in the same session.
 	 *
 	 * @param list<array{fileId: string, mediaType: string, filename?: string}> $attachments
 	 * @throws AiChatException
@@ -555,25 +564,77 @@ class ChatService
 			fn(): string => $this->buildHistory($conversation),
 			$modelChoice['model'] ?? null,
 			$modelChoice['effort'] ?? null,
+			new ConversationTurnMonitor($this->em, $conversation),
 		);
 
 		// Last line of defence: redact direct identifiers from the reply, including
-		// literal values from personal-data columns no regex can recognise.
-		$text = $this->piiFilter->filter($result->text, $this->piiValueCollector->collect($result->toolData));
+		// literal values from personal-data columns no regex can recognise. The tasks
+		// and reports of subagents reach the browser too.
+		$piiValues = $this->piiValueCollector->collect($result->toolData);
+		$text = $this->piiFilter->filter($result->text, $piiValues);
+		$toolData = array_map(function (array $entry) use ($piiValues): array {
+			if (($entry['tool_name'] ?? '') === 'subagent') {
+				$entry['tool_input']['task'] = $this->piiFilter->filter((string) ($entry['tool_input']['task'] ?? ''), $piiValues);
+				$entry['tool_result']['report'] = $this->piiFilter->filter((string) ($entry['tool_result']['report'] ?? ''), $piiValues);
+			}
+
+			return $entry;
+		}, $result->toolData);
 
 		$reply = $this->addMessage(
 			$conversation,
 			$text,
 			MessageInterface::AUTHOR_AI,
-			$result->toolData ?: null,
-			$result->tokensInput,
-			$result->tokensOutput,
+			$toolData ?: null,
+			$result->tokensInput ?: null,
+			$result->tokensOutput ?: null,
+			interrupted: $result->interrupted,
 		);
 
 		$conversation->setUpdated(new \DateTimeImmutable());
 		$this->em->flush();
 
 		return $reply;
+	}
+
+	/**
+	 * Asks the running turn of the conversation to stop. The worker interrupts the
+	 * session and stores what the agent managed as an interrupted reply; a turn that
+	 * did not start yet ends right away. False when no turn is waiting for a reply.
+	 */
+	public function cancelTurn(ConversationInterface $conversation): bool
+	{
+		if (!$this->isTurnPending($conversation)) {
+			return false;
+		}
+
+		$conversation->setTurnCancelled(new \DateTimeImmutable());
+		$this->em->flush();
+
+		return true;
+	}
+
+	/**
+	 * The state of the turn waiting for a reply, for the widget; null when none waits.
+	 * `activity` changes with every sign of life of the turn (the widget measures its
+	 * timeout from it), `progress` lists the subagents at work.
+	 *
+	 * @return array{activity: string, cancelled: bool, progress: array{tool_calls: int, threads: list<array<string, mixed>>}|null}|null
+	 */
+	public function getTurnState(ConversationInterface $conversation): ?array
+	{
+		$last = $this->findLastMessage($conversation);
+		if ($last === null || $last['author'] !== MessageInterface::AUTHOR_USER) {
+			return null;
+		}
+
+		$activity = max($last['created'], $conversation->getTurnActivity() ?? $last['created']);
+
+		return [
+			'activity' => $activity->format(DATE_ATOM),
+			'cancelled' => $conversation->getTurnCancelled() !== null,
+			'progress' => $conversation->getTurnProgress(),
+		];
 	}
 
 	/**
@@ -651,6 +712,7 @@ class ChatService
 		bool $error = false,
 		?array $attachments = null,
 		?array $modelChoice = null,
+		bool $interrupted = false,
 	): MessageInterface {
 		$class = $this->options->messageClass;
 		// A reply runs on the choice of the message it answers - the latest one.
@@ -667,6 +729,7 @@ class ChatService
 			->setTokensInput($tokensInput)
 			->setTokensOutput($tokensOutput)
 			->setError($error)
+			->setInterrupted($interrupted)
 			->setCreated(new \DateTimeImmutable());
 
 		$this->em->persist($message);
@@ -709,11 +772,42 @@ class ChatService
 	 */
 	protected function checkPendingTurn(ConversationInterface $conversation): void
 	{
+		if ($this->isTurnPending($conversation)) {
+			throw AiChatException::translatable('The previous message is still being answered. Please wait for the reply.', 'aiChat.error.turnPending');
+		}
+	}
+
+	/**
+	 * Does the last message still wait for its reply? A turn without a sign of life
+	 * (the message, the heartbeat of the worker) for {@see ChatOptions::$pendingTurnSeconds}
+	 * counts as lost.
+	 */
+	protected function isTurnPending(ConversationInterface $conversation): bool
+	{
 		if ($conversation->getId() === null || $this->options->pendingTurnSeconds <= 0) {
-			return;
+			return false;
 		}
 
-		$last = $this->em->createQueryBuilder()
+		$last = $this->findLastMessage($conversation);
+		if ($last === null || $last['author'] !== MessageInterface::AUTHOR_USER) {
+			return false;
+		}
+
+		$activity = max($last['created'], $conversation->getTurnActivity() ?? $last['created']);
+
+		return $activity >= new \DateTimeImmutable('-' . $this->options->pendingTurnSeconds . ' seconds');
+	}
+
+	/**
+	 * @return array{author: string, created: \DateTimeImmutable}|null
+	 */
+	private function findLastMessage(ConversationInterface $conversation): ?array
+	{
+		if ($conversation->getId() === null) {
+			return null;
+		}
+
+		return $this->em->createQueryBuilder()
 			->select('m.author, m.created')
 			->from($this->options->messageClass, 'm')
 			->where('m.' . $this->options->conversationField . ' = :conversation')
@@ -722,14 +816,6 @@ class ChatService
 			->setMaxResults(1)
 			->getQuery()
 			->getOneOrNullResult();
-
-		if (
-			$last !== null
-			&& $last['author'] === MessageInterface::AUTHOR_USER
-			&& $last['created'] >= new \DateTimeImmutable('-' . $this->options->pendingTurnSeconds . ' seconds')
-		) {
-			throw AiChatException::translatable('The previous message is still being answered. Please wait for the reply.', 'aiChat.error.turnPending');
-		}
 	}
 
 	/**
