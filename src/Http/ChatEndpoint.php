@@ -31,7 +31,7 @@ use Psr\Log\LoggerInterface;
  * `canManage` (default: not read-only) allows rating and deleting. A colleague who
  * may continue someone's conversation gets readOnly false + canManage false, and
  * with {@see \ADT\AiChat\ChatOptions::$senderField} the user messages carry
- * `sender: {name, self}` ({@see setSenderFormatter()}).
+ * `sender: {name, self, owner}` ({@see setSenderFormatter()}).
  *
  * What reaches the browser is whitelisted ({@see clientToolData()}): only
  * displayable results and export tokens. SQL, schema and table names stay on the
@@ -258,7 +258,8 @@ class ChatEndpoint
 
 	/**
 	 * The message in the shape the widget expects. A user message stored with a
-	 * sender carries `sender: {name, self}` - self when $viewer wrote it; `model` and
+	 * sender carries `sender: {name, self, owner}` - self when $viewer wrote it, owner
+	 * when the owner of the conversation did; `model` and
 	 * `effort` are the ones the conversation ran on for the message.
 	 *
 	 * @return array<string, mixed>
@@ -273,6 +274,7 @@ class ChatEndpoint
 			'sender' => $sender !== null ? [
 				'name' => $this->formatSender($sender),
 				'self' => $this->chat->isSameUser($sender, $viewer),
+				'owner' => $this->chat->isSameUser($sender, $this->chat->getOwner($message->getConversation())),
 			] : null,
 			'content' => $message->getContent(),
 			'tool_data' => $this->clientToolData($message->getToolData(), $message->getId()),

@@ -286,8 +286,9 @@ $endpoint->load($owner, $id, false, $owner === $me, viewer: $me);
 $endpoint->poll($owner, $id, $afterId, viewer: $me);
 ```
 
-User messages then carry `sender: {name, self}` and the widget shows the name of
-other senders. The rate limit counts the messages per sender. Who may write into
+User messages then carry `sender: {name, self, owner}` and the widget shows the
+name above every message the owner of the conversation did not write, and above
+the owner's messages for the other readers. The rate limit counts the messages per sender. Who may write into
 whose conversation is your decision, as with reading.
 
 A new message is refused (`aiChat.error.turnPending`) while the previous one of
