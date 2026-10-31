@@ -124,11 +124,50 @@ class ChatService
 			->getFieldValue($conversation, $this->options->ownerField);
 	}
 
+	/**
+	 * The user's feedback on the conversation; a null rating clears it together with
+	 * the comment. Rating again overwrites the previous one.
+	 *
+	 * @throws AiChatException
+	 */
+	public function rateConversation(ConversationInterface $conversation, ?int $rating, ?string $comment = null): void
+	{
+		if ($rating !== null && $rating !== ConversationInterface::RATING_UP && $rating !== ConversationInterface::RATING_DOWN) {
+			throw AiChatException::translatable('Invalid rating.', 'aiChat.error.invalidRating');
+		}
+
+		$comment = $comment !== null ? trim($comment) : '';
+
+		$conversation->setRating($rating);
+		$conversation->setRatingComment($rating !== null && $comment !== '' ? mb_substr($comment, 0, $this->options->ratingCommentMaxLength) : null);
+		$conversation->setRated($rating !== null ? new \DateTimeImmutable() : null);
+		$this->em->flush();
+	}
+
 	/** Soft delete - the transcript stays for audits and statistics. */
 	public function deleteConversation(ConversationInterface $conversation): void
 	{
 		$conversation->setDeleted(true);
 		$this->em->flush();
+	}
+
+	/**
+	 * The model choice of a conversation is final once it has a message: the session
+	 * it runs in cannot switch models.
+	 */
+	public function isModelLocked(ConversationInterface $conversation): bool
+	{
+		if ($conversation->getId() === null) {
+			return false;
+		}
+
+		return (int) $this->em->createQueryBuilder()
+			->select('COUNT(m)')
+			->from($this->options->messageClass, 'm')
+			->where('m.' . $this->options->conversationField . ' = :conversation')
+			->setParameter('conversation', $conversation)
+			->getQuery()
+			->getSingleScalarResult() > 0;
 	}
 
 	// -- Messages --------------------------------------------------------------
@@ -180,6 +219,9 @@ class ChatService
 	 * session context with every request, so the tokensInput of the latest reply
 	 * equals the current window usage.
 	 *
+	 * The window is the one of the conversation's model ({@see ModelSelection}), or
+	 * {@see ChatOptions::$contextWindowTokens} when it has none.
+	 *
 	 * @return array{used: int, window: int, percent: int}
 	 */
 	public function getContextUsage(ConversationInterface $conversation): array
@@ -196,7 +238,7 @@ class ChatService
 			->getOneOrNullResult();
 
 		$used = (int) ($row['tokensInput'] ?? 0);
-		$window = $this->options->contextWindowTokens;
+		$window = $this->options->modelSelection->getContextWindow($conversation->getModel(), $this->options->contextWindowTokens);
 
 		return [
 			'used' => $used,
@@ -214,11 +256,21 @@ class ChatService
 	 * web request) and only the returned file ids travel through the queue - the
 	 * worker replays them as content blocks of the user message.
 	 *
+	 * The model and effort apply to a conversation without messages only - a session
+	 * cannot switch models, so later ones are ignored. Null means the default of
+	 * {@see ModelSelection}.
+	 *
 	 * @param list<AttachmentUpload> $uploads
-	 * @throws AiChatException with a message for the user (rate limit, attachments, API)
+	 * @throws AiChatException with a message for the user (rate limit, attachments, API,
+	 *         a model or effort that is not offered)
 	 */
-	public function enqueueMessage(ConversationInterface $conversation, string $userMessage, array $uploads = []): MessageInterface
-	{
+	public function enqueueMessage(
+		ConversationInterface $conversation,
+		string $userMessage,
+		array $uploads = [],
+		?string $model = null,
+		?string $effort = null,
+	): MessageInterface {
 		$userMessage = trim($userMessage);
 		if ($userMessage === '' && !$uploads) {
 			throw AiChatException::translatable('The message cannot be empty.', 'aiChat.error.emptyMessage');
@@ -226,7 +278,15 @@ class ChatService
 
 		$this->checkRateLimit($this->getOwner($conversation));
 
+		// Validated before the uploads, stored only once nothing can fail anymore.
+		$modelChoice = !$this->isModelLocked($conversation) ? $this->options->modelSelection->resolve($model, $effort) : null;
+
 		$attachments = $this->uploadAttachments($uploads);
+
+		if ($modelChoice !== null) {
+			$conversation->setModel($modelChoice['model']);
+			$conversation->setEffort($modelChoice['effort']);
+		}
 
 		// The transcript is kept on our side too - history does not depend on the session.
 		$message = $this->addMessage($conversation, $userMessage, MessageInterface::AUTHOR_USER, attachments: $attachments ?: null);

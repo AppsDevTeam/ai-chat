@@ -85,17 +85,26 @@ class ChatEndpoint
 	 * by {@see poll()} from `lastMessageId` on. Without a conversation id a new
 	 * conversation is started, so the first message needs one request only.
 	 *
+	 * The model and effort (the widget sends them while the conversation has no
+	 * message yet) are validated against {@see \ADT\AiChat\ModelSelection}.
+	 *
 	 * @param list<AttachmentUpload> $uploads
 	 * @return array<string, mixed>
 	 */
-	public function send(object|int|string $owner, int|string|null $conversationId, string $message, array $uploads = []): array
-	{
-		return $this->guard(function () use ($owner, $conversationId, $message, $uploads): array {
+	public function send(
+		object|int|string $owner,
+		int|string|null $conversationId,
+		string $message,
+		array $uploads = [],
+		?string $model = null,
+		?string $effort = null,
+	): array {
+		return $this->guard(function () use ($owner, $conversationId, $message, $uploads, $model, $effort): array {
 			$conversation = $conversationId !== null && $conversationId !== '' && $conversationId !== 0
 				? $this->requireConversation($conversationId, $owner)
 				: $this->chat->createConversation($owner);
 
-			$userMessage = $this->chat->enqueueMessage($conversation, $message, $uploads);
+			$userMessage = $this->chat->enqueueMessage($conversation, $message, $uploads, $model, $effort);
 
 			return [
 				'success' => true,
@@ -123,6 +132,26 @@ class ChatEndpoint
 				'messages' => array_map($this->clientMessage(...), $this->chat->getMessagesAfter($conversation, $afterId)),
 				'conversation' => $this->clientConversation($conversation),
 				'contextUsage' => $this->chat->getContextUsage($conversation),
+			];
+		});
+	}
+
+	/**
+	 * The owner's rating of the conversation ({@see ConversationInterface::RATING_UP} or
+	 * RATING_DOWN, null clears it) with an optional comment. Refuse it in a read-only
+	 * view - only the owner rates their conversation.
+	 *
+	 * @return array<string, mixed>
+	 */
+	public function rate(object|int|string $owner, int|string $conversationId, ?int $rating, ?string $comment = null): array
+	{
+		return $this->guard(function () use ($owner, $conversationId, $rating, $comment): array {
+			$conversation = $this->requireConversation($conversationId, $owner);
+			$this->chat->rateConversation($conversation, $rating, $comment);
+
+			return [
+				'success' => true,
+				'conversation' => $this->clientConversation($conversation),
 			];
 		});
 	}
@@ -176,7 +205,7 @@ class ChatEndpoint
 	}
 
 	/**
-	 * @return array{id: int|string|null, title: string, created: string, updated: string}
+	 * @return array{id: int|string|null, title: string, created: string, updated: string, model: string|null, effort: string|null, rating: int|null, ratingComment: string|null}
 	 */
 	public function clientConversation(ConversationInterface $conversation): array
 	{
@@ -185,6 +214,10 @@ class ChatEndpoint
 			'title' => $conversation->getTitle(),
 			'created' => $conversation->getCreated()->format(DATE_ATOM),
 			'updated' => $conversation->getUpdated()->format(DATE_ATOM),
+			'model' => $conversation->getModel(),
+			'effort' => $conversation->getEffort(),
+			'rating' => $conversation->getRating(),
+			'ratingComment' => $conversation->getRatingComment(),
 		];
 	}
 

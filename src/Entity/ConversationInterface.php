@@ -14,6 +14,9 @@ namespace ADT\AiChat\Entity;
  */
 interface ConversationInterface
 {
+	public const RATING_UP = 1;
+	public const RATING_DOWN = -1;
+
 	public function getId(): int|string|null;
 
 	public function getTitle(): string;
@@ -36,4 +39,27 @@ interface ConversationInterface
 	public function getUpdated(): \DateTimeImmutable;
 
 	public function setUpdated(\DateTimeImmutable $updated): static;
+
+	/** Model chosen for the conversation; null = the model of the agent. */
+	public function getModel(): ?string;
+
+	public function setModel(?string $model): static;
+
+	/** Thinking effort chosen for the conversation; null = the model default. */
+	public function getEffort(): ?string;
+
+	public function setEffort(?string $effort): static;
+
+	/** {@see self::RATING_UP}, {@see self::RATING_DOWN} or null when not rated. */
+	public function getRating(): ?int;
+
+	public function setRating(?int $rating): static;
+
+	public function getRatingComment(): ?string;
+
+	public function setRatingComment(?string $ratingComment): static;
+
+	public function getRated(): ?\DateTimeImmutable;
+
+	public function setRated(?\DateTimeImmutable $rated): static;
 }

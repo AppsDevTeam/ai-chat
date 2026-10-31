@@ -6,7 +6,9 @@ use ADT\AiChat\AttachmentPolicy;
 use ADT\AiChat\AttachmentUpload;
 use ADT\AiChat\ChatOptions;
 use ADT\AiChat\Entity\MessageInterface;
+use ADT\AiChat\Entity\ConversationInterface;
 use ADT\AiChat\Exception\AiChatException;
+use ADT\AiChat\ModelSelection;
 use ADT\AiChat\Tests\Support\ChatTestEnvironment;
 use ADT\AiChat\Tests\Support\Entity\TestConversation;
 use ADT\AiChat\Tests\Support\Entity\TestMessage;
@@ -248,5 +250,136 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		);
 		$this->assertNull($this->env->chat->findExport($message, 'wrong'));
 		$this->assertNull($this->env->chat->findExport($message, ''));
+	}
+
+	public function testModelChoiceIsStoredAndSentAsSessionOverride(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'max');
+		$env->scriptReply('Hello');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$this->assertSame('claude-opus-5-5', $conversation->getModel());
+		$this->assertSame('max', $conversation->getEffort());
+		$this->assertSame([['id' => 'claude-opus-5-5', 'effort' => 'max']], $env->client->createdSessionModels);
+	}
+
+	public function testModelChoiceFallsBackToTheDefaults(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi');
+
+		$this->assertSame('claude-sonnet-5-5', $conversation->getModel());
+		$this->assertSame('high', $conversation->getEffort());
+	}
+
+	public function testModelChoiceIsLockedAfterTheFirstMessage(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+		$this->assertFalse($env->chat->isModelLocked($conversation));
+
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'medium');
+		$env->chat->enqueueMessage($conversation, 'Again', [], 'claude-sonnet-5-5', 'max');
+
+		$this->assertTrue($env->chat->isModelLocked($conversation));
+		$this->assertSame('claude-opus-5-5', $conversation->getModel());
+		$this->assertSame('medium', $conversation->getEffort());
+	}
+
+	public function testModelOrEffortNotOfferedIsRefused(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		foreach ([['claude-haiku-4-5', 'high', 'aiChat.error.unknownModel'], ['claude-opus-5-5', 'xhigh', 'aiChat.error.unknownEffort']] as [$model, $effort, $key]) {
+			try {
+				$env->chat->enqueueMessage($conversation, 'Hi', [], $model, $effort);
+				$this->fail('A model or effort that is not offered must be refused.');
+			} catch (AiChatException $e) {
+				$this->assertSame($key, $e->getTranslationKey());
+			}
+		}
+
+		$this->assertNull($conversation->getModel());
+		$this->assertSame([], $env->dispatcher->dispatched);
+	}
+
+	public function testWithoutModelSelectionTheSessionRunsOnTheAgentModel(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+
+		$this->env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'max');
+		$this->env->scriptReply('Hello');
+		$this->env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$this->assertNull($conversation->getModel());
+		$this->assertSame([null], $this->env->client->createdSessionModels);
+	}
+
+	public function testContextUsageUsesTheWindowOfTheConversationModel(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5');
+		$env->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Hello']]],
+			['id' => 'e2', 'type' => 'span.model_request_end', 'model_usage' => ['input_tokens' => 100000, 'output_tokens' => 7]],
+			['id' => 'e3', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$this->assertSame(['used' => 100000, 'window' => 1000000, 'percent' => 10], $env->chat->getContextUsage($conversation));
+	}
+
+	public function testRatingIsStoredAndCleared(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+
+		$this->env->chat->rateConversation($conversation, ConversationInterface::RATING_DOWN, '  Wrong numbers  ');
+
+		$this->assertSame(-1, $conversation->getRating());
+		$this->assertSame('Wrong numbers', $conversation->getRatingComment());
+		$this->assertNotNull($conversation->getRated());
+
+		$this->env->chat->rateConversation($conversation, ConversationInterface::RATING_UP, '');
+		$this->assertSame(1, $conversation->getRating());
+		$this->assertNull($conversation->getRatingComment());
+
+		$this->env->chat->rateConversation($conversation, null, 'ignored');
+		$this->assertNull($conversation->getRating());
+		$this->assertNull($conversation->getRatingComment());
+		$this->assertNull($conversation->getRated());
+	}
+
+	public function testInvalidRatingIsRefused(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+
+		try {
+			$this->env->chat->rateConversation($conversation, 5);
+			$this->fail('A rating other than 1 / -1 must be refused.');
+		} catch (AiChatException $e) {
+			$this->assertSame('aiChat.error.invalidRating', $e->getTranslationKey());
+		}
+
+		$this->assertNull($conversation->getRating());
+	}
+
+	private function withModelSelection(): ChatTestEnvironment
+	{
+		return new ChatTestEnvironment(new ChatOptions(
+			TestConversation::class,
+			TestMessage::class,
+			ownerField: 'owner',
+			modelSelection: new ModelSelection([
+				'claude-sonnet-5-5' => ['label' => 'Sonnet 5.5', 'contextWindowTokens' => 1000000],
+				'claude-opus-5-5' => ['label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
+			]),
+		));
 	}
 }

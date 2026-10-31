@@ -44,9 +44,14 @@ interface ManagedAgentsClient
 	/**
 	 * POST /sessions - starts a new session for the given agent and environment.
 	 *
+	 * With $model the session overrides the model of the agent: send
+	 * `agent: {type: "agent_with_overrides", id: $agentId, model: $model}` instead of
+	 * the plain agent id. The override replaces the whole model object of the agent.
+	 *
+	 * @param array{id: string, effort?: string}|null $model
 	 * @return array<string, mixed> response body (contains id and status)
 	 */
-	public function createSession(string $agentId, string $environmentId, ?string $title = null): array;
+	public function createSession(string $agentId, string $environmentId, ?string $title = null, ?array $model = null): array;
 
 	/**
 	 * POST /sessions/{id}/events - sends events (user.message, user.custom_tool_result, ...).

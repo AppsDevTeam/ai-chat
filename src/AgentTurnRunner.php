@@ -93,10 +93,15 @@ class AgentTurnRunner
 
 		$resolution = ($this->agentResolver)();
 
+		$model = $conversation->getModel();
+		$effort = $conversation->getEffort();
+
 		$session = $this->client->createSession(
 			$resolution->agentId,
 			$resolution->environmentId,
 			$conversation->getTitle() !== '' ? $conversation->getTitle() : null,
+			// The model chosen for the conversation overrides the one of the agent.
+			$model !== null && $model !== '' ? ['id' => $model] + ($effort !== null && $effort !== '' ? ['effort' => $effort] : []) : null,
 		);
 
 		$sessionId = (string) ($session['id'] ?? '');

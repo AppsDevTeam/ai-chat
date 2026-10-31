@@ -89,6 +89,22 @@ class GuzzleManagedAgentsClientTest extends \Codeception\Test\Unit
 		);
 	}
 
+	public function testSessionWithModelOverridesTheAgent(): void
+	{
+		$client = $this->client();
+		$this->mock->append(new Response(200, [], '{"id":"sesn_1"}'));
+
+		$client->createSession('agent_1', 'env_1', null, ['id' => 'claude-opus-5-5', 'effort' => 'max']);
+
+		$this->assertSame(
+			[
+				'agent' => ['type' => 'agent_with_overrides', 'id' => 'agent_1', 'model' => ['id' => 'claude-opus-5-5', 'effort' => 'max']],
+				'environment_id' => 'env_1',
+			],
+			json_decode((string) $this->history[0]['request']->getBody(), true),
+		);
+	}
+
 	public function testUploadIsMultipartWithBothBetas(): void
 	{
 		$client = $this->client();

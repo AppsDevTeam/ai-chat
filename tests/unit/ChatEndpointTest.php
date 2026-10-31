@@ -130,4 +130,28 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		rewind($out);
 		$this->assertSame("\u{FEFF}id,name\n1,Šárka\n2,Jan\n", stream_get_contents($out));
 	}
+
+	public function testRateReturnsTheConversationWithItsRating(): void
+	{
+		$owner = $this->env->owner();
+		$conversationId = $this->env->endpoint->send($owner, null, 'Hi')['conversation']['id'];
+
+		$response = $this->env->endpoint->rate($owner, $conversationId, 1, 'Spot on');
+
+		$this->assertTrue($response['success']);
+		$this->assertSame(1, $response['conversation']['rating']);
+		$this->assertSame('Spot on', $response['conversation']['ratingComment']);
+		$this->assertSame(1, $this->env->endpoint->load($owner, $conversationId)['conversation']['rating']);
+	}
+
+	public function testForeignConversationCannotBeRated(): void
+	{
+		$alice = $this->env->owner();
+		$conversationId = $this->env->endpoint->send($alice, null, 'Hi')['conversation']['id'];
+
+		$response = $this->env->endpoint->rate($this->env->owner(), $conversationId, -1);
+
+		$this->assertFalse($response['success']);
+		$this->assertNull($this->env->endpoint->load($alice, $conversationId)['conversation']['rating']);
+	}
 }

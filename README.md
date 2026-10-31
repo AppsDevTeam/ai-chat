@@ -105,6 +105,9 @@ class AiChatAgent implements ADT\AiChat\Entity\AgentInterface
 `ChatService` creates conversations and messages with `new $class()`, so the
 constructors must not require arguments.
 
+`ConversationTrait` also carries the chosen `model` and `effort` and the user's
+`rating` (1 / -1), `rating_comment` (anonymized as free text) and `rated`.
+
 ### 3. The chat service and the queue
 
 ```php
@@ -157,9 +160,12 @@ mountAll(document, { marked, DOMPurify, Chart });
 `mode: "single"` renders one conversation without the list (a side panel); without
 `conversationId` the first message starts a new conversation. Other options:
 `readOnly`, `locale`, `accept`/`maxAttachments`/`maxAttachmentBytes` (take them
-from `AttachmentPolicy`), `labels` (all texts), `icons` (Font Awesome classes by
-default), `pollIntervalMs`, `fitViewport`. The root dispatches
-`ai-chat:conversation` and `ai-chat:deleted` events. No inline styles or scripts -
+from `AttachmentPolicy`), `modelSelection` (`ModelSelection::toClient()`), `labels`
+(all texts), `icons` (Font Awesome classes by default), `pollIntervalMs`,
+`fitViewport`, `params` (extra parameters sent with every request and export
+link, e.g. `{"userId": 5}` for an administrator viewing someone's conversations;
+`AiChat.get(root).setParams({...})` changes them and reloads the list). The root
+dispatches `ai-chat:conversation` and `ai-chat:deleted` events. No inline styles or scripts -
 works under a strict CSP; colours are CSS variables (`--ai-chat-*`).
 
 ### 5. Provisioning the agent
@@ -201,6 +207,54 @@ and sending their results back, token accounting (window usage = last request in
 cache counters; output summed), a retry with a fresh session when a stale one
 refuses the message, and hard stops (`maxPolls`, `maxToolCalls`) that surface as
 `TurnTimeoutException` - which is never retried, so a message cannot be duplicated.
+
+### Model selection
+
+`ChatOptions::$modelSelection` lists the models (and thinking effort levels) the
+user may pick for a conversation:
+
+```php
+new ChatOptions(AiChatConversation::class, AiChatMessage::class,
+	modelSelection: new ModelSelection(
+		models: [
+			'claude-sonnet-5-5' => ['label' => 'Claude Sonnet 5.5', 'contextWindowTokens' => 1000000],
+			'claude-opus-5-5' => ['label' => 'Claude Opus 5.5', 'contextWindowTokens' => 1000000],
+		],
+		efforts: ['medium', 'high', 'max'],    // [] = send none, the model default
+		defaultModel: 'claude-sonnet-5-5',     // null = the first model
+		defaultEffort: 'high',
+	),
+);
+```
+
+The widget shows a model and an effort select (pass `modelSelection` from
+`ModelSelection::toClient()` in its config) and sends them with the first message;
+`ChatEndpoint::send($owner, $id, $text, $uploads, $model, $effort)` validates them
+and stores them on the conversation. The session then starts with
+`agent: {type: "agent_with_overrides", id, model: {id, effort}}`, so one agent
+serves every model. A session cannot switch models - the choice is locked once the
+conversation has a message (`ChatService::isModelLocked()`). The context gauge
+uses the window of the chosen model.
+
+Without models (the default) the selection is off, conversations keep a null model
+and run on the model of the agent. Only offer models that support the listed effort
+levels (e.g. not Haiku 4.5, which takes none).
+
+### Rating
+
+With `urls.rate` in the widget config the owner can rate a conversation that has a
+reply - thumbs up / down plus an optional comment; a second click on the active
+thumb takes the rating back. A read-only view shows the rating and the comment, the
+conversation list marks rated conversations. On the server:
+
+```php
+// POST conversationId, rating ('1', '-1' or '' to clear), comment
+$rating = $request->getPost('rating');
+$response = $endpoint->rate($owner, $conversationId, $rating !== '' && $rating !== null ? (int) $rating : null, $request->getPost('comment'));
+```
+
+Only the owner rates - pass the signed-in user, never the owner of a read-only view.
+`ChatOptions::$ratingCommentMaxLength` (2000) cuts longer comments.
 
 ### Attachments
 
@@ -277,10 +331,25 @@ $default): string)`. Without it the English defaults are used. Keys:
 | `aiChat.error.serviceUnavailable` | `detail` |
 | `aiChat.error.turnTimeout`, `aiChat.error.tooManyToolCalls` | |
 | `aiChat.error.conversationNotFound`, `aiChat.error.invalidExport` | |
+| `aiChat.error.unknownModel` | `model` |
+| `aiChat.error.unknownEffort` | `effort` |
+| `aiChat.error.invalidRating` | |
 | `aiChat.error.unexpected` | |
 | `aiChat.export.empty`, `aiChat.export.failed` | |
 
 The widget texts are passed in its `labels` config.
+
+## Upgrading to 0.8
+
+- `ConversationInterface` has new `get/setModel()`, `get/setEffort()`,
+  `get/setRating()`, `get/setRatingComment()` and `get/setRated()` (the trait
+  implements them) - generate a migration for the new nullable columns `model`,
+  `effort`, `rating`, `rating_comment` and `rated`.
+- `ManagedAgentsClient::createSession()` takes a fourth `?array $model` (the session
+  override); custom implementations must accept it.
+- New widget config `modelSelection` and URL `rate`, new labels and icons
+- Widget config `params` and `AiChat::setParams()` for extra request parameters; install the widget from the same tag (`yarn add adt-ai-chat@github:AppsDevTeam/ai-chat#v0.8.0`)
+  (`rateUp`, `rateDown`) - both features stay off without them.
 
 ## Upgrading to 0.4
 

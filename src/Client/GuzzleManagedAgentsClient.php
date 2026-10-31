@@ -81,10 +81,10 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 		]);
 	}
 
-	public function createSession(string $agentId, string $environmentId, ?string $title = null): array
+	public function createSession(string $agentId, string $environmentId, ?string $title = null, ?array $model = null): array
 	{
 		$body = [
-			'agent' => $agentId,
+			'agent' => $model !== null ? ['type' => 'agent_with_overrides', 'id' => $agentId, 'model' => $model] : $agentId,
 			'environment_id' => $environmentId,
 		];
 
