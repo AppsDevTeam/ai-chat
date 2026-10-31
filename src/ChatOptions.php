@@ -16,13 +16,24 @@ class ChatOptions
 	 * @param string $ownerField association (or column) of the conversation that holds
 	 *        its owner - the user, identity or account the conversations belong to
 	 * @param string $conversationField association of the message to its conversation
-	 * @param int $rateLimitPerMinute user messages per owner and minute
-	 * @param int $rateLimitPerHour user messages per owner and hour
+	 * @param int $rateLimitPerMinute user messages per owner (per sender with a
+	 *        $senderField) and minute
+	 * @param int $rateLimitPerHour user messages per owner (per sender) and hour
 	 * @param int $contextWindowTokens window size of the model, for the context gauge
 	 * @param int $titleMaxLength the conversation title is cut from the first message
 	 * @param ModelSelection $modelSelection models and effort levels the user may pick;
 	 *        the context gauge takes the window of the chosen model from it
 	 * @param int $ratingCommentMaxLength longer comments of a conversation rating are cut
+	 * @param string|null $senderField association (or column) of the message that holds
+	 *        who wrote a user message - set it when other users may write into a
+	 *        conversation; null = every user message is the owner's
+	 * @param int $pendingTurnSeconds a new message is refused while the previous one
+	 *        waits for its reply - two turns must not run in one session at once. After
+	 *        this long the turn counts as lost (a killed worker) and sending is free
+	 *        again; keep it above the longest turn (AiChatOptions maxPolls x interval)
+	 * @param int $historyMaxChars a new session of an existing conversation (a switched
+	 *        model, an expired session) gets the earlier transcript; beyond this length
+	 *        the oldest messages are left out
 	 */
 	public function __construct(
 		public readonly string $conversationClass,
@@ -36,6 +47,9 @@ class ChatOptions
 		public readonly AttachmentPolicy $attachments = new AttachmentPolicy(),
 		public readonly ModelSelection $modelSelection = new ModelSelection(),
 		public readonly int $ratingCommentMaxLength = 2000,
+		public readonly ?string $senderField = null,
+		public readonly int $pendingTurnSeconds = 900,
+		public readonly int $historyMaxChars = 100000,
 	) {
 	}
 

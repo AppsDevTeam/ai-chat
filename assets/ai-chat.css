@@ -249,7 +249,16 @@
 
 .ai-chat__message--user {
 	display: flex;
-	justify-content: flex-end;
+	flex-direction: column;
+	align-items: flex-end;
+}
+
+/* Another user wrote the message into the conversation; the model of a reply. */
+.ai-chat__sender,
+.ai-chat__model-tag {
+	margin: 0 4px 2px;
+	font-size: 0.75rem;
+	color: var(--ai-chat-muted, #6c757d);
 }
 
 .ai-chat__message--ai {
@@ -611,7 +620,7 @@
 	}
 }
 
-/* Model and effort selection (ModelSelection), locked after the first message. */
+/* Model and effort selection (ModelSelection), switchable within a conversation. */
 .ai-chat__options {
 	display: flex;
 	flex-wrap: wrap;
@@ -644,12 +653,6 @@
 	outline: none;
 	border-color: var(--ai-chat-accent);
 	box-shadow: 0 0 0 2px var(--ai-chat-focus-ring);
-}
-
-.ai-chat__options--locked .ai-chat__option-select {
-	background: #f5f5f5;
-	color: #888;
-	cursor: not-allowed;
 }
 
 /* Rating of the conversation under the messages. */

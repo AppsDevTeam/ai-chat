@@ -11,8 +11,8 @@ use ADT\AiChat\Exception\AiChatException;
  *
  * The choice is stored on the conversation and sent as a per-session override of the
  * agent (`agent_with_overrides`), so one provisioned agent serves every model. A
- * session cannot switch models, so the choice is locked once the conversation has
- * its first message.
+ * session cannot switch models - switching within a conversation starts a new
+ * session, seeded with the transcript ({@see ChatService::buildHistory()}).
  *
  * With no models configured the selection is off: conversations keep a null model
  * and run on the model of the agent.

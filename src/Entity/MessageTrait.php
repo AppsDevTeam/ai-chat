@@ -51,6 +51,14 @@ trait MessageTrait
 	#[Description('Total output tokens of the turn.')]
 	protected ?int $tokensOutput = null;
 
+	#[ORM\Column(length: 64, nullable: true)]
+	#[Description('Claude model ID the conversation ran on for this message (it can be switched within a conversation); null means the model of the agent.')]
+	protected ?string $model = null;
+
+	#[ORM\Column(length: 16, nullable: true)]
+	#[Description('Thinking effort level the conversation ran on for this message; null means the model default.')]
+	protected ?string $effort = null;
+
 	#[ORM\Column(options: ['default' => false])]
 	#[Description('True when the assistant turn failed and the content holds the error text.')]
 	protected bool $error = false;
@@ -133,6 +141,28 @@ trait MessageTrait
 	public function setTokensOutput(?int $tokensOutput): static
 	{
 		$this->tokensOutput = $tokensOutput;
+		return $this;
+	}
+
+	public function getModel(): ?string
+	{
+		return $this->model;
+	}
+
+	public function setModel(?string $model): static
+	{
+		$this->model = $model;
+		return $this;
+	}
+
+	public function getEffort(): ?string
+	{
+		return $this->effort;
+	}
+
+	public function setEffort(?string $effort): static
+	{
+		$this->effort = $effort;
 		return $this;
 	}
 

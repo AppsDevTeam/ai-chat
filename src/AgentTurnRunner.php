@@ -53,6 +53,10 @@ class AgentTurnRunner
 	 *        of the conversation changes, so the caller can flush it immediately
 	 * @param list<Attachment> $attachments files already uploaded to the Files API,
 	 *        sent as image/document content blocks of the same user.message
+	 * @param (callable(): string)|null $history the earlier transcript of the
+	 *        conversation; asked only when a NEW session starts for it (a switched
+	 *        model, an expired session) and sent ahead of the message, so the session
+	 *        does not start without context
 	 * @throws AiChatException|TurnTimeoutException
 	 */
 	public function run(
@@ -60,12 +64,13 @@ class AgentTurnRunner
 		string $userMessage,
 		callable $persistSessionId,
 		array $attachments = [],
+		?callable $history = null,
 	): TurnResult {
 		$reusedExisting = ($conversation->getSessionId() ?? '') !== '';
 		$sessionId = $this->ensureSession($conversation, $persistSessionId);
 
 		try {
-			return $this->runSessionTurn($sessionId, $userMessage, $attachments);
+			return $this->runSessionTurn($sessionId, $userMessage, $attachments, !$reusedExisting && $history !== null ? $history() : '');
 		} catch (AiChatException $e) {
 			if ($e instanceof TurnTimeoutException || !$reusedExisting) {
 				throw $e;
@@ -76,7 +81,7 @@ class AgentTurnRunner
 
 			$sessionId = $this->ensureSession($conversation, $persistSessionId);
 
-			return $this->runSessionTurn($sessionId, $userMessage, $attachments);
+			return $this->runSessionTurn($sessionId, $userMessage, $attachments, $history !== null ? $history() : '');
 		}
 	}
 
@@ -119,7 +124,7 @@ class AgentTurnRunner
 	 * @param list<Attachment> $attachments
 	 * @throws AiChatException
 	 */
-	private function runSessionTurn(string $sessionId, string $userMessage, array $attachments = []): TurnResult
+	private function runSessionTurn(string $sessionId, string $userMessage, array $attachments = [], string $history = ''): TurnResult
 	{
 		// Events present before sending are history and must be ignored.
 		$seen = $this->collectEventIds($sessionId);
@@ -132,6 +137,9 @@ class AgentTurnRunner
 		// A message may consist of attachments only; an empty text block is refused.
 		if ($userMessage !== '' || !$content) {
 			$content[] = ['type' => 'text', 'text' => $userMessage];
+		}
+		if ($history !== '') {
+			array_unshift($content, ['type' => 'text', 'text' => $history]);
 		}
 
 		$this->client->sendSessionEvents($sessionId, [[

@@ -31,11 +31,21 @@
  *
  * Model selection: with `modelSelection` in the config ({models: [{id, label}],
  * efforts, defaultModel, defaultEffort} - ModelSelection::toClient()) the input
- * gets a model and an effort select. The choice travels with the first message of
- * a conversation and is locked afterwards (a session cannot switch models).
+ * gets a model and an effort select. The choice travels with every message and can
+ * be switched within a conversation (the server then starts a new session with the
+ * transcript); AI replies show the model that wrote them.
  *
  * Rating: with `urls.rate` the owner can rate a conversation that has a reply
  * (thumbs up / down + an optional comment); a read-only view shows the rating.
+ *
+ * Access: `readOnly` hides the input, `canManage` (default: not read-only) allows
+ * rating and deleting - a colleague continuing someone's conversation writes but
+ * does not manage it. The server sends both with the list and the conversation.
+ * User messages with `sender: {name, self}` of someone else show the name.
+ *
+ * Shareable links: with `urlParam` (e.g. "conversation") the open conversation is
+ * kept in that query parameter of the page URL (history.replaceState) and a page
+ * opened with it loads that conversation.
  *
  * Extra parameters: `params` ({name: value}) go with every request and export
  * link, e.g. whose conversations an administrator views. setParams() changes them
@@ -74,7 +84,7 @@ const DEFAULT_LABELS = {
 	errorFileTooLarge: 'File "{name}" is too large. The limit is {max} MB.',
 	model: 'Model',
 	effort: 'Thinking',
-	modelHint: 'Model and thinking depth for this conversation. They cannot be changed after the first message.',
+	modelHint: 'Model and thinking depth for the next message. Switching them within a conversation starts the assistant over from the transcript.',
 	effortLevels: { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' },
 	rateQuestion: 'Was this conversation helpful?',
 	rateUp: 'Helpful',
@@ -105,6 +115,10 @@ const DEFAULTS = {
 	mode: 'full',
 	conversationId: null,
 	readOnly: false,
+	// null = not read-only.
+	canManage: null,
+	// Query parameter of the page URL holding the open conversation; null = off.
+	urlParam: null,
 	locale: undefined,
 	accept: '',
 	maxAttachments: 4,
@@ -165,7 +179,8 @@ export class AiChat {
 
 		this.single = this.config.mode === 'single';
 		this.readOnly = !!this.config.readOnly;
-		this.conversationId = this.config.conversationId ?? null;
+		this.canManage = this.config.canManage ?? !this.readOnly;
+		this.conversationId = this.config.conversationId ?? this.readUrlConversation();
 		this.params = { ...(this.config.params || {}) };
 		this.loading = false;
 		this.files = [];
@@ -176,7 +191,6 @@ export class AiChat {
 		this.modelSelection = this.config.modelSelection?.models?.length ? this.config.modelSelection : null;
 		this.preferredModel = this.modelSelection?.defaultModel ?? null;
 		this.preferredEffort = this.modelSelection?.defaultEffort ?? null;
-		this.modelLocked = false;
 		this.conversation = null;
 		this.hasReply = false;
 		this.onResize = () => this.fitHeight();
@@ -198,7 +212,7 @@ export class AiChat {
 			this.refreshConversationList();
 		}
 
-		this.applyReadOnly(this.readOnly);
+		this.applyReadOnly(this.readOnly, this.canManage);
 	}
 
 	destroy() {
@@ -337,22 +351,31 @@ export class AiChat {
 	}
 
 	/**
-	 * Locked: shows the choice of the conversation (its model, or the default for one
-	 * that ran on the agent model). Unlocked: the user's last choice.
+	 * An open conversation shows the model it runs on (the default for one that ran
+	 * on the agent model), a new one the user's last choice.
 	 */
-	setModelChoice(conversation, locked) {
-		this.modelLocked = locked;
+	setModelChoice(conversation) {
 		if (!this.modelOptions) {
 			return;
 		}
 
-		this.modelSelect.value = (locked ? conversation?.model : null) ?? this.preferredModel ?? '';
-		this.modelSelect.disabled = locked;
+		const started = conversation?.id != null;
+		this.modelSelect.value = (started ? conversation.model ?? this.modelSelection.defaultModel : this.preferredModel) ?? '';
 		if (this.effortSelect) {
-			this.effortSelect.value = (locked ? conversation?.effort : null) ?? this.preferredEffort ?? '';
-			this.effortSelect.disabled = locked;
+			this.effortSelect.value = (started ? conversation.effort ?? this.modelSelection.defaultEffort : this.preferredEffort) ?? '';
 		}
-		this.modelOptions.classList.toggle('ai-chat__options--locked', locked);
+	}
+
+	/** "Claude Opus 5.5 · Max" of a message; '' without a model. */
+	modelLabel(message) {
+		if (!this.modelSelection || !message.model) {
+			return '';
+		}
+
+		const model = this.modelSelection.models.find((item) => item.id === message.model);
+		const effort = message.effort ? this.labels.effortLevels[message.effort] || message.effort : '';
+
+		return [model?.label || message.model, effort].filter(Boolean).join(' · ');
 	}
 
 	buildRating() {
@@ -396,30 +419,31 @@ export class AiChat {
 		}
 
 		const rating = this.conversation?.rating ?? null;
-		// A read-only view shows the owner's feedback, if there is any.
-		this.ratingBox.hidden = !this.conversation?.id || !this.hasReply || (this.readOnly && rating === null);
+		// Only the owner rates; anyone else sees the owner's feedback, if there is any.
+		const locked = !this.canManage;
+		this.ratingBox.hidden = !this.conversation?.id || !this.hasReply || (locked && rating === null);
 		if (this.ratingBox.hidden) {
 			return;
 		}
 
-		this.ratingBox.classList.toggle('ai-chat__rating--readonly', this.readOnly);
+		this.ratingBox.classList.toggle('ai-chat__rating--readonly', locked);
 		for (const button of [this.rateUpButton, this.rateDownButton]) {
 			const active = Number(button.dataset.rating) === rating;
 			button.classList.toggle('ai-chat__rating-btn--active', active);
 			button.setAttribute('aria-pressed', active ? 'true' : 'false');
-			button.disabled = this.readOnly;
+			button.disabled = locked;
 		}
 
 		const comment = this.conversation?.ratingComment || '';
-		this.ratingCommentText.hidden = !this.readOnly || comment === '';
+		this.ratingCommentText.hidden = !locked || comment === '';
 		this.ratingCommentText.textContent = comment;
-		if (this.readOnly) {
+		if (locked) {
 			this.ratingCommentRow.hidden = true;
 		}
 	}
 
 	onRate(rating) {
-		if (this.readOnly || !this.conversation?.id) {
+		if (!this.canManage || !this.conversation?.id) {
 			return;
 		}
 
@@ -465,8 +489,9 @@ export class AiChat {
 		this.refreshConversationList();
 	}
 
-	applyReadOnly(readOnly) {
+	applyReadOnly(readOnly, canManage = !readOnly) {
 		this.readOnly = readOnly;
+		this.canManage = canManage;
 		this.root.classList.toggle('ai-chat--readonly', readOnly);
 		this.form.hidden = readOnly;
 		if (this.newButton) {
@@ -550,7 +575,7 @@ export class AiChat {
 		}
 
 		if (typeof data.readOnly === 'boolean') {
-			this.applyReadOnly(data.readOnly);
+			this.applyReadOnly(data.readOnly, data.canManage ?? !data.readOnly);
 		}
 
 		this.renderConversationList(data.conversations || []);
@@ -580,7 +605,7 @@ export class AiChat {
 				]),
 			]);
 
-			if (!this.readOnly) {
+			if (this.canManage) {
 				item.append(el('button', { type: 'button', class: 'ai-chat__conversation-delete', 'data-id': conversation.id, title: this.labels.delete, 'aria-label': this.labels.delete }, [
 					icon(this.icons.delete),
 				]));
@@ -648,15 +673,44 @@ export class AiChat {
 		this.clearMessages();
 		this.showWelcome(true);
 		this.setTitle('');
-		this.setModelChoice(null, false);
+		this.setModelChoice(null);
 		this.renderRating();
 		this.markActive();
+		this.writeUrlConversation(null);
+	}
+
+	/** The conversation id from the page URL ({@link DEFAULTS.urlParam}). */
+	readUrlConversation() {
+		if (!this.config.urlParam) {
+			return null;
+		}
+
+		return new URL(window.location.href).searchParams.get(this.config.urlParam) || null;
+	}
+
+	/** Keeps the open conversation in the page URL, so the link can be shared. */
+	writeUrlConversation(conversationId) {
+		if (!this.config.urlParam) {
+			return;
+		}
+
+		const url = new URL(window.location.href);
+		if (conversationId) {
+			url.searchParams.set(this.config.urlParam, conversationId);
+		} else {
+			url.searchParams.delete(this.config.urlParam);
+		}
+
+		if (url.href !== window.location.href) {
+			window.history.replaceState(window.history.state, '', url);
+		}
 	}
 
 	async loadConversation(conversationId) {
 		this.stopPolling();
 		this.conversationId = conversationId;
 		this.markActive();
+		this.writeUrlConversation(conversationId);
 		this.setLoading(true);
 
 		let data;
@@ -676,18 +730,19 @@ export class AiChat {
 		this.conversation = null;
 
 		if (!data.success) {
-			this.setModelChoice(null, false);
+			this.setModelChoice(null);
 			this.renderRating();
+			this.writeUrlConversation(null);
 			this.appendError(data.error || this.labels.errorUnavailable);
 			return;
 		}
 
 		this.conversation = data.conversation ?? null;
 		const messages = data.messages || [];
-		this.setModelChoice(this.conversation, messages.length > 0);
+		this.setModelChoice(this.conversation);
 
 		if (typeof data.readOnly === 'boolean') {
-			this.applyReadOnly(data.readOnly);
+			this.applyReadOnly(data.readOnly, data.canManage ?? !data.readOnly);
 		}
 
 		this.setTitle(data.conversation?.title);
@@ -712,7 +767,7 @@ export class AiChat {
 	}
 
 	async deleteConversation(conversationId) {
-		if (this.readOnly) {
+		if (!this.canManage) {
 			return;
 		}
 
@@ -761,15 +816,12 @@ export class AiChat {
 		body.append('message', text);
 		files.forEach((file) => body.append('attachments[]', file, file.name));
 
-		// The choice counts for the first message only; lock it right away.
-		const wasLocked = this.modelLocked;
-		if (this.modelOptions && !wasLocked) {
+		if (this.modelOptions) {
 			body.append('model', this.modelSelect.value);
 			if (this.effortSelect) {
 				body.append('effort', this.effortSelect.value);
 			}
 		}
-		this.setModelChoice(this.conversation, true);
 
 		let data;
 		try {
@@ -786,9 +838,6 @@ export class AiChat {
 			this.resizeTextarea();
 			this.files = files;
 			this.renderFiles();
-			if (!wasLocked) {
-				this.setModelChoice(this.conversation, false);
-			}
 			this.appendError(data.error || this.labels.errorUnknown);
 			this.scrollToBottom();
 			return;
@@ -796,8 +845,9 @@ export class AiChat {
 
 		const created = String(this.conversationId) !== String(data.conversation.id);
 		this.conversationId = data.conversation.id;
+		this.writeUrlConversation(this.conversationId);
 		this.conversation = data.conversation;
-		this.setModelChoice(this.conversation, true);
+		this.setModelChoice(this.conversation);
 		this.setTitle(data.conversation.title);
 		this.emit('ai-chat:conversation', { conversation: data.conversation, created });
 
@@ -856,10 +906,17 @@ export class AiChat {
 				return;
 			}
 
-			if (data?.messages?.length) {
-				this.setLoading(false);
-				data.messages.forEach((message) => this.appendMessage(message));
+			// Messages of other senders may arrive meanwhile - show them, and stop only
+			// once the reply (or an error) is there.
+			const messages = data?.messages || [];
+			messages.forEach((message) => this.appendMessage(message));
+			if (messages.length) {
+				afterId = messages[messages.length - 1].id ?? afterId;
 				this.scrollToBottom();
+			}
+
+			if (messages.some((message) => message.author !== 'user' || message.error)) {
+				this.setLoading(false);
 				this.setTitle(data.conversation?.title);
 				this.updateContextUsage(data.contextUsage);
 				this.conversation = data.conversation ?? this.conversation;
@@ -996,6 +1053,15 @@ export class AiChat {
 		const item = el('div', { class: 'ai-chat__message ai-chat__message--' + author });
 		const bubble = el('div', { class: 'ai-chat__bubble ai-chat__bubble--' + author });
 
+		if (author === 'user' && message.sender && !message.sender.self && message.sender.name) {
+			item.append(el('div', { class: 'ai-chat__sender' }, [message.sender.name]));
+		}
+
+		const modelLabel = author === 'ai' ? this.modelLabel(message) : '';
+		if (modelLabel) {
+			item.append(el('div', { class: 'ai-chat__model-tag' }, [modelLabel]));
+		}
+
 		if (author === 'ai') {
 			this.renderMarkdown(bubble, message.content);
 		} else {
@@ -1082,13 +1148,16 @@ export class AiChat {
 			return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 		};
 
-		const datasets = (chart.datasets || []).map((dataset, index) => ({
-			label: dataset.label,
-			data: dataset.data,
-			backgroundColor: pie ? dataset.data.map((_, i) => color(i, 0.7)) : color(index, 0.7),
-			borderColor: pie ? dataset.data.map((_, i) => color(i, 1)) : color(index, 1),
-			borderWidth: 1,
-		}));
+		const datasets = toList(chart.datasets).filter((dataset) => dataset && typeof dataset === 'object').map((dataset, index) => {
+			const data = toList(dataset.data);
+			return {
+				label: dataset.label,
+				data,
+				backgroundColor: pie ? data.map((_, i) => color(i, 0.7)) : color(index, 0.7),
+				borderColor: pie ? data.map((_, i) => color(i, 1)) : color(index, 1),
+				borderWidth: 1,
+			};
+		});
 
 		// Created once the canvas is in the document, so Chart.js can measure it.
 		requestAnimationFrame(() => {
@@ -1098,7 +1167,7 @@ export class AiChat {
 
 			this.charts.push(new Chart(canvas, {
 				type: chart.chart_type,
-				data: { labels: chart.labels, datasets },
+				data: { labels: toList(chart.labels), datasets },
 				options: { responsive: true, maintainAspectRatio: false, plugins: { title: { display: false } } },
 			}));
 		});
@@ -1107,8 +1176,8 @@ export class AiChat {
 	}
 
 	renderTable(table) {
-		const headers = table.headers || [];
-		const rows = table.rows || [];
+		const headers = toList(table.headers);
+		const rows = toList(table.rows).map(toList);
 
 		const download = el('button', { type: 'button', class: 'btn btn-sm ai-chat__table-export' }, [
 			icon(this.icons.download), ' ' + this.labels.exportCsv,
@@ -1197,6 +1266,22 @@ export class AiChat {
 /** Mounts every [data-ai-chat] element under the root. */
 export function mountAll(root = document, deps = {}) {
 	return Array.from(root.querySelectorAll('[data-ai-chat]')).map((element) => AiChat.mount(element, deps));
+}
+
+/**
+ * An array value of a tool result; a JSON-encoded string (the model sometimes sends
+ * "rows": "[[...]]") is decoded, anything else becomes an empty list.
+ */
+export function toList(value) {
+	if (typeof value === 'string') {
+		try {
+			value = JSON.parse(value);
+		} catch {
+			return [];
+		}
+	}
+
+	return Array.isArray(value) ? value : [];
 }
 
 /**

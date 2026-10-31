@@ -139,6 +139,7 @@ class ChatServiceTest extends \Codeception\Test\Unit
 			TestMessage::class,
 			ownerField: 'owner',
 			rateLimitPerMinute: 2,
+			pendingTurnSeconds: 0,
 		));
 		$owner = $env->owner();
 		$first = $env->chat->createConversation($owner);
@@ -277,18 +278,83 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->assertSame('high', $conversation->getEffort());
 	}
 
-	public function testModelChoiceIsLockedAfterTheFirstMessage(): void
+	public function testModelCanBeSwitchedWithinAConversation(): void
 	{
 		$env = $this->withModelSelection();
 		$conversation = $env->chat->createConversation($env->owner());
-		$this->assertFalse($env->chat->isModelLocked($conversation));
 
 		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'medium');
+		$env->scriptReply('Hello');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+		$this->assertSame('sesn_1', $conversation->getSessionId());
+
 		$env->chat->enqueueMessage($conversation, 'Again', [], 'claude-sonnet-5-5', 'max');
 
-		$this->assertTrue($env->chat->isModelLocked($conversation));
+		// The session runs on the old model - the next turn starts a new one.
+		$this->assertSame('claude-sonnet-5-5', $conversation->getModel());
+		$this->assertSame('max', $conversation->getEffort());
+		$this->assertNull($conversation->getSessionId());
+
+		$env->scriptReply('Hello again');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Again');
+
+		$this->assertSame([['id' => 'claude-opus-5-5', 'effort' => 'medium'], ['id' => 'claude-sonnet-5-5', 'effort' => 'max']], $env->client->createdSessionModels);
+
+		// The new session got the earlier transcript ahead of the message.
+		$content = end($env->client->sentEvents)[0]['content'];
+		$this->assertCount(2, $content);
+		$this->assertStringContainsString("<conversation_history>\nUser: Hi\n\nAssistant: Hello\n</conversation_history>", $content[0]['text']);
+		$this->assertSame(['type' => 'text', 'text' => 'Again'], $content[1]);
+
+		$this->assertSame(
+			[['user', 'claude-opus-5-5', 'medium'], ['ai', 'claude-opus-5-5', 'medium'], ['user', 'claude-sonnet-5-5', 'max'], ['ai', 'claude-sonnet-5-5', 'max']],
+			array_map(static fn($m): array => [$m->getAuthor(), $m->getModel(), $m->getEffort()], $env->chat->getMessages($conversation)),
+		);
+	}
+
+	public function testUnchangedModelKeepsTheSession(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-opus-5-5', 'medium');
+		$env->scriptReply('Hello');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		// The same choice, and no choice at all, keep the model and the session.
+		$env->chat->enqueueMessage($conversation, 'Again', [], 'claude-opus-5-5', 'medium');
+		$env->scriptReply('Hello again');
+		$env->chat->processQueuedMessage($conversation->getId(), 'Again');
+		$env->chat->enqueueMessage($conversation, 'Once more');
+
 		$this->assertSame('claude-opus-5-5', $conversation->getModel());
 		$this->assertSame('medium', $conversation->getEffort());
+		$this->assertSame('sesn_1', $conversation->getSessionId());
+		$this->assertCount(1, $env->client->createdSessionModels);
+	}
+
+	public function testHistorySummarizesToolCallsAndLeavesOutOldMessages(): void
+	{
+		$env = $this->withModelSelection();
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Revenue?');
+		$env->client->frames = [
+			[
+				['id' => 'evt_tool', 'type' => 'agent.custom_tool_use', 'name' => 'render_table', 'input' => ['title' => 'Revenue', 'headers' => ['Branch', 'CZK'], 'rows' => '[["Praha", 100]]']],
+				['id' => 'evt_req', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'requires_action']],
+			],
+			[
+				['id' => 'evt_msg', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Here it is']]],
+				['id' => 'evt_idle', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+			],
+		];
+		$env->chat->processQueuedMessage($conversation->getId(), 'Revenue?');
+		$env->chat->enqueueMessage($conversation, 'And now?');
+
+		$history = $env->chat->buildHistory($conversation);
+		$this->assertStringContainsString("User: Revenue?\n\n[render_table] Revenue\nBranch | CZK\nPraha | 100\nAssistant: Here it is\n</conversation_history>", $history);
+		$this->assertStringNotContainsString('And now?', $history);
 	}
 
 	public function testModelOrEffortNotOfferedIsRefused(): void
@@ -381,5 +447,55 @@ class ChatServiceTest extends \Codeception\Test\Unit
 				'claude-opus-5-5' => ['label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
 			]),
 		));
+	}
+
+	public function testAMessageWaitingForItsReplyBlocksTheNextOne(): void
+	{
+		$env = new ChatTestEnvironment();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->chat->enqueueMessage($conversation, 'one');
+
+		try {
+			$env->chat->enqueueMessage($conversation, 'two');
+			$this->fail('A second turn must not start in the same session.');
+		} catch (AiChatException $e) {
+			$this->assertSame('aiChat.error.turnPending', $e->getTranslationKey());
+		}
+
+		$env->scriptReply('Done');
+		$env->chat->processQueuedMessage($conversation->getId(), 'one');
+		$env->chat->enqueueMessage($conversation, 'two');
+		$this->assertCount(2, $env->dispatcher->dispatched);
+	}
+
+	public function testAnotherUserWritesIntoTheConversation(): void
+	{
+		$env = new ChatTestEnvironment(new ChatOptions(
+			TestConversation::class,
+			TestMessage::class,
+			ownerField: 'owner',
+			rateLimitPerMinute: 1,
+			senderField: 'sender',
+			pendingTurnSeconds: 0,
+		));
+		$alice = $env->owner();
+		$bob = $env->owner();
+		$conversation = $env->chat->createConversation($alice);
+
+		$own = $env->chat->enqueueMessage($conversation, 'mine');
+		$foreign = $env->chat->enqueueMessage($conversation, 'continuing', sender: $bob);
+
+		$this->assertSame($alice, $env->chat->getSender($own));
+		$this->assertSame($bob, $env->chat->getSender($foreign));
+		$this->assertTrue($env->chat->isSameUser($bob, $bob->id));
+		$this->assertFalse($env->chat->isSameUser($alice, $bob));
+
+		// The rate limit counts per sender - Alice is at her limit, Bob's message did not count for her.
+		try {
+			$env->chat->enqueueMessage($conversation, 'again');
+			$this->fail('Alice is over her rate limit.');
+		} catch (AiChatException $e) {
+			$this->assertSame('aiChat.error.rateLimitMinute', $e->getTranslationKey());
+		}
 	}
 }

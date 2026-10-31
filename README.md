@@ -159,7 +159,7 @@ mountAll(document, { marked, DOMPurify, Chart });
 
 `mode: "single"` renders one conversation without the list (a side panel); without
 `conversationId` the first message starts a new conversation. Other options:
-`readOnly`, `locale`, `accept`/`maxAttachments`/`maxAttachmentBytes` (take them
+`readOnly`, `canManage`, `urlParam` (see Shared conversations), `locale`, `accept`/`maxAttachments`/`maxAttachmentBytes` (take them
 from `AttachmentPolicy`), `modelSelection` (`ModelSelection::toClient()`), `labels`
 (all texts), `icons` (Font Awesome classes by default), `pollIntervalMs`,
 `fitViewport`, `params` (extra parameters sent with every request and export
@@ -228,13 +228,16 @@ new ChatOptions(AiChatConversation::class, AiChatMessage::class,
 ```
 
 The widget shows a model and an effort select (pass `modelSelection` from
-`ModelSelection::toClient()` in its config) and sends them with the first message;
+`ModelSelection::toClient()` in its config) and sends them with every message;
 `ChatEndpoint::send($owner, $id, $text, $uploads, $model, $effort)` validates them
-and stores them on the conversation. The session then starts with
+and stores them on the conversation and on the message. The session starts with
 `agent: {type: "agent_with_overrides", id, model: {id, effort}}`, so one agent
-serves every model. A session cannot switch models - the choice is locked once the
-conversation has a message (`ChatService::isModelLocked()`). The context gauge
-uses the window of the chosen model.
+serves every model. A session cannot switch models, so switching within a
+conversation drops its session: the next turn starts a new one and sends the earlier
+transcript ahead of the message (`ChatService::buildHistory()` - the texts, the SQL
+and the rendered tables and charts, the newest `ChatOptions::$historyMaxChars`).
+The same happens when an expired session is replaced. AI replies show the model
+that wrote them; the context gauge uses the window of the current model.
 
 Without models (the default) the selection is off, conversations keep a null model
 and run on the model of the agent. Only offer models that support the listed effort
@@ -255,6 +258,43 @@ $response = $endpoint->rate($owner, $conversationId, $rating !== '' && $rating !
 
 Only the owner rates - pass the signed-in user, never the owner of a read-only view.
 `ChatOptions::$ratingCommentMaxLength` (2000) cuts longer comments.
+
+### Shared conversations and links
+
+With `ChatOptions::$senderField` other users may write into a conversation - a
+colleague continuing your analysis. Map the field on the message entity (nullable,
+it stays empty for AI replies):
+
+```php
+#[ORM\ManyToOne(targetEntity: User::class)]
+#[ORM\JoinColumn(nullable: true, onDelete: 'SET NULL')]
+protected ?User $sender = null;
+```
+
+```php
+$endpoint->setSenderFormatter(fn(User $user): string => $user->getName());
+
+// the owner's conversation, written by the signed-in colleague
+$endpoint->send($owner, $id, $text, $uploads, $model, $effort, sender: $me);
+// readOnly false = may write, canManage false = may not rate or delete
+$endpoint->conversations($owner, false, $owner === $me);
+$endpoint->load($owner, $id, false, $owner === $me, viewer: $me);
+$endpoint->poll($owner, $id, $afterId, viewer: $me);
+```
+
+User messages then carry `sender: {name, self}` and the widget shows the name of
+other senders. The rate limit counts the messages per sender. Who may write into
+whose conversation is your decision, as with reading.
+
+A new message is refused (`aiChat.error.turnPending`) while the previous one of
+the conversation waits for its reply - two turns must not run in one session at
+once. `ChatOptions::$pendingTurnSeconds` (900) releases it after a lost turn.
+
+Widget config `urlParam: "conversation"` keeps the open conversation in that query
+parameter of the page URL, so the address can be sent to someone; a page opened
+with it loads the conversation. Whose conversations to list for such a link (the
+owner's, when the viewer may see them) is up to the page - e.g. pass the owner in
+`params`.
 
 ### Attachments
 
@@ -334,10 +374,32 @@ $default): string)`. Without it the English defaults are used. Keys:
 | `aiChat.error.unknownModel` | `model` |
 | `aiChat.error.unknownEffort` | `effort` |
 | `aiChat.error.invalidRating` | |
+| `aiChat.error.turnPending` | |
 | `aiChat.error.unexpected` | |
 | `aiChat.export.empty`, `aiChat.export.failed` | |
 
 The widget texts are passed in its `labels` config.
+
+## Upgrading to 0.9
+
+- A message cannot be sent while the previous one of the conversation still waits
+  for its reply (`aiChat.error.turnPending`, `ChatOptions::$pendingTurnSeconds`).
+- Optional `ChatOptions::$senderField` (a new nullable column on your message entity)
+  for conversations several users write into; `ChatService::enqueueMessage()` and
+  `ChatEndpoint::send()` take a `$sender`, `load()`/`poll()` a `$viewer`,
+  `conversations()`/`load()` a `$canManage` flag. Messages carry `sender` (null
+  without the field).
+- The model and effort can be switched within a conversation (see Model
+  selection). `MessageInterface` has new `get/setModel()` and `get/setEffort()`
+  (the trait implements them) - generate a migration for the new nullable columns
+  `model` and `effort` of the message (fill existing rows from their conversation).
+  `ChatService::isModelLocked()` is gone; `AgentTurnRunner::run()` takes an
+  optional `$history` callback. Messages carry `model` and `effort`.
+- `render_table` / `render_chart` arguments the model sends as JSON-encoded strings
+  are decoded (`ToolHandler::normalizeRenderResult()`), stored ones too.
+- Widget: `canManage` (rating and deleting, default not read-only), `urlParam`,
+  the `.ai-chat__sender` and `.ai-chat__model-tag` labels; polling stops at the reply, not at the first new
+  message. Install it from the same tag (`yarn add adt-ai-chat@github:AppsDevTeam/ai-chat#v0.9.0`).
 
 ## Upgrading to 0.8
 
