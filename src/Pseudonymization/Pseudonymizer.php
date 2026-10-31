@@ -56,7 +56,7 @@ class Pseudonymizer
 
 	/**
 	 * Patterns in order: [kind, pattern, exclude (a match of it is not this kind),
-	 * validator (optional, a match it rejects is not this kind)].
+	 * validator (optional, a match it rejects is replaced only when it belongs to a subject)].
 	 * The birth number goes first, a phone would eat it otherwise (9-10 digits). The
 	 * birth number must not be a part of a bank account (19-2000145399/0800) and the
 	 * account must not take the shape of a birth number (885512/3453); MM/YYYY is not
@@ -119,12 +119,9 @@ class Pseudonymizer
 			$validator = $entry[3] ?? null;
 			preg_match_all($pattern, $text, $matches);
 			foreach ($matches[0] as $span) {
-				if (
-					!isset($spans[$span])
-					&& ($exclude === null || !preg_match($exclude, $span))
-					&& ($validator === null || $validator($span))
-				) {
-					$this->add($spans, $conversation, new PiiFinding($span, $kind), checkReadable: true);
+				if (!isset($spans[$span]) && ($exclude === null || !preg_match($exclude, $span))) {
+					// An invalid number still goes when it belongs to a subject (a typo in the record)
+					$this->add($spans, $conversation, new PiiFinding($span, $kind), checkReadable: true, subjectOnly: $validator !== null && !$validator($span));
 				}
 			}
 		}
@@ -182,9 +179,12 @@ class Pseudonymizer
 	}
 
 	/** @param array<string, array{0: string, 1: string}> $spans */
-	private function add(array &$spans, ConversationInterface $conversation, PiiFinding $finding, bool $checkReadable): void
+	private function add(array &$spans, ConversationInterface $conversation, PiiFinding $finding, bool $checkReadable, bool $subjectOnly = false): void
 	{
 		$subject = $finding->subject ?? $this->resolver?->resolve($finding);
+		if ($subject === null && $subjectOnly) {
+			return;
+		}
 		if ($subject === null && $checkReadable && $this->resolver?->isReadable($finding)) {
 			return;
 		}

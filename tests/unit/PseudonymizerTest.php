@@ -128,6 +128,16 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 		$this->assertSame('Zaplatil 125 000 000 Kč, volej [TELEFON_1], RČ [RČ_1] a [RČ_2].', $result->replaced);
 	}
 
+	public function testInvalidNumberOfASubjectIsStillReplaced(): void
+	{
+		// A typo in the record - the checksum fails, but the number is the patient's
+		$this->resolver->subjects['8855123457'] = self::SUBJECT;
+
+		$result = $this->pseudonymizer()->pseudonymize($this->conversation, 'RČ 8855123457 a objednávka 2024001234.');
+
+		$this->assertSame('RČ [PACIENT #7] a objednávka 2024001234.', $result->replaced);
+	}
+
 	public function testBirthNumberValidation(): void
 	{
 		foreach (['885512/3453', '0101011240', '535221/123', '0453210010', '7801010020', '0472150008'] as $valid) {
