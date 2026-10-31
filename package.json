@@ -1,6 +1,6 @@
 {
   "name": "adt-ai-chat",
-  "version": "0.9.2",
+  "version": "0.10.0",
   "description": "Browser widget of adt/ai-chat: conversations, markdown replies, charts, tables, CSV exports, model selection and rating",
   "type": "module",
   "main": "assets/ai-chat.js",

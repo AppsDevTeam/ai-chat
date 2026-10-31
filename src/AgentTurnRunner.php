@@ -57,6 +57,9 @@ class AgentTurnRunner
 	 *        conversation; asked only when a NEW session starts for it (a switched
 	 *        model, an expired session) and sent ahead of the message, so the session
 	 *        does not start without context
+	 * @param string|null $model the model a new session runs on (an override of the
+	 *        agent); null = the model of the agent
+	 * @param string|null $effort thinking effort of a new session; null = the model default
 	 * @throws AiChatException|TurnTimeoutException
 	 */
 	public function run(
@@ -65,9 +68,11 @@ class AgentTurnRunner
 		callable $persistSessionId,
 		array $attachments = [],
 		?callable $history = null,
+		?string $model = null,
+		?string $effort = null,
 	): TurnResult {
 		$reusedExisting = ($conversation->getSessionId() ?? '') !== '';
-		$sessionId = $this->ensureSession($conversation, $persistSessionId);
+		$sessionId = $this->ensureSession($conversation, $persistSessionId, $model, $effort);
 
 		try {
 			return $this->runSessionTurn($sessionId, $userMessage, $attachments, !$reusedExisting && $history !== null ? $history() : '');
@@ -79,7 +84,7 @@ class AgentTurnRunner
 			$conversation->setSessionId(null);
 			$persistSessionId(null);
 
-			$sessionId = $this->ensureSession($conversation, $persistSessionId);
+			$sessionId = $this->ensureSession($conversation, $persistSessionId, $model, $effort);
 
 			return $this->runSessionTurn($sessionId, $userMessage, $attachments, $history !== null ? $history() : '');
 		}
@@ -89,7 +94,7 @@ class AgentTurnRunner
 	 * @param callable(?string): void $persistSessionId
 	 * @throws AiChatException
 	 */
-	private function ensureSession(ConversationInterface $conversation, callable $persistSessionId): string
+	private function ensureSession(ConversationInterface $conversation, callable $persistSessionId, ?string $model, ?string $effort): string
 	{
 		$existing = $conversation->getSessionId();
 		if ($existing !== null && $existing !== '') {
@@ -98,14 +103,11 @@ class AgentTurnRunner
 
 		$resolution = ($this->agentResolver)();
 
-		$model = $conversation->getModel();
-		$effort = $conversation->getEffort();
-
 		$session = $this->client->createSession(
 			$resolution->agentId,
 			$resolution->environmentId,
 			$conversation->getTitle() !== '' ? $conversation->getTitle() : null,
-			// The model chosen for the conversation overrides the one of the agent.
+			// The chosen model overrides the one of the agent.
 			$model !== null && $model !== '' ? ['id' => $model] + ($effort !== null && $effort !== '' ? ['effort' => $effort] : []) : null,
 		);
 

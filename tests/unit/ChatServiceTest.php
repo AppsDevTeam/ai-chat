@@ -262,8 +262,8 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$env->scriptReply('Hello');
 		$env->chat->processQueuedMessage($conversation->getId(), 'Hi');
 
-		$this->assertSame('claude-opus-5-5', $conversation->getModel());
-		$this->assertSame('max', $conversation->getEffort());
+		$this->assertSame('claude-opus-5-5', $env->chat->getModelChoice($conversation)['model']);
+		$this->assertSame('max', $env->chat->getModelChoice($conversation)['effort']);
 		$this->assertSame([['id' => 'claude-opus-5-5', 'effort' => 'max']], $env->client->createdSessionModels);
 	}
 
@@ -274,8 +274,8 @@ class ChatServiceTest extends \Codeception\Test\Unit
 
 		$env->chat->enqueueMessage($conversation, 'Hi');
 
-		$this->assertSame('claude-sonnet-5-5', $conversation->getModel());
-		$this->assertSame('high', $conversation->getEffort());
+		$this->assertSame('claude-sonnet-5-5', $env->chat->getModelChoice($conversation)['model']);
+		$this->assertSame('high', $env->chat->getModelChoice($conversation)['effort']);
 	}
 
 	public function testTheWidgetGetsTheContextWindowOfEachModel(): void
@@ -304,8 +304,8 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$env->chat->enqueueMessage($conversation, 'Again', [], 'claude-sonnet-5-5', 'max');
 
 		// The session runs on the old model - the next turn starts a new one.
-		$this->assertSame('claude-sonnet-5-5', $conversation->getModel());
-		$this->assertSame('max', $conversation->getEffort());
+		$this->assertSame('claude-sonnet-5-5', $env->chat->getModelChoice($conversation)['model']);
+		$this->assertSame('max', $env->chat->getModelChoice($conversation)['effort']);
 		$this->assertNull($conversation->getSessionId());
 
 		$env->scriptReply('Hello again');
@@ -340,8 +340,8 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$env->chat->processQueuedMessage($conversation->getId(), 'Again');
 		$env->chat->enqueueMessage($conversation, 'Once more');
 
-		$this->assertSame('claude-opus-5-5', $conversation->getModel());
-		$this->assertSame('medium', $conversation->getEffort());
+		$this->assertSame('claude-opus-5-5', $env->chat->getModelChoice($conversation)['model']);
+		$this->assertSame('medium', $env->chat->getModelChoice($conversation)['effort']);
 		$this->assertSame('sesn_1', $conversation->getSessionId());
 		$this->assertCount(1, $env->client->createdSessionModels);
 	}
@@ -384,7 +384,7 @@ class ChatServiceTest extends \Codeception\Test\Unit
 			}
 		}
 
-		$this->assertNull($conversation->getModel());
+		$this->assertNull($env->chat->getModelChoice($conversation));
 		$this->assertSame([], $env->dispatcher->dispatched);
 	}
 
@@ -396,7 +396,7 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->env->scriptReply('Hello');
 		$this->env->chat->processQueuedMessage($conversation->getId(), 'Hi');
 
-		$this->assertNull($conversation->getModel());
+		$this->assertSame(['model' => null, 'effort' => null], $this->env->chat->getModelChoice($conversation));
 		$this->assertSame([null], $this->env->client->createdSessionModels);
 	}
 

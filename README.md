@@ -105,7 +105,8 @@ class AiChatAgent implements ADT\AiChat\Entity\AgentInterface
 `ChatService` creates conversations and messages with `new $class()`, so the
 constructors must not require arguments.
 
-`ConversationTrait` also carries the chosen `model` and `effort` and the user's
+`MessageTrait` carries the `model` and `effort` the message was sent or answered
+with, `ConversationTrait` the user's
 `rating` (1 / -1), `rating_comment` (anonymized as free text) and `rated`.
 
 ### 3. The chat service and the queue
@@ -230,7 +231,8 @@ new ChatOptions(AiChatConversation::class, AiChatMessage::class,
 The widget shows a model and an effort select (pass `modelSelection` from
 `ModelSelection::toClient()` in its config) and sends them with every message;
 `ChatEndpoint::send($owner, $id, $text, $uploads, $model, $effort)` validates them
-and stores them on the conversation and on the message. The session starts with
+and stores them on the message. The conversation runs on the choice of its latest
+message (`ChatService::getModelChoice()`), it keeps none of its own. The session starts with
 `agent: {type: "agent_with_overrides", id, model: {id, effort}}`, so one agent
 serves every model. A session cannot switch models, so switching within a
 conversation drops its session: the next turn starts a new one and sends the earlier
@@ -239,11 +241,11 @@ and the rendered tables and charts, the newest `ChatOptions::$historyMaxChars`).
 The same happens when an expired session is replaced. AI replies show the model
 that wrote them. The model select shows the context window next to the label
 (`Claude Opus 5.5 (1M)`) and the context gauge follows the selected model: its window,
-and once the model or effort differs from the conversation's, the estimated size of
+and once the model or effort differs from the latest message's, the estimated size of
 the new session (`contextUsage.historyTokens` - the first reply's input plus the
 transcript) with the `contextSwitch` label.
 
-Without models (the default) the selection is off, conversations keep a null model
+Without models (the default) the selection is off, messages keep a null model
 and run on the model of the agent. Only offer models that support the listed effort
 levels (e.g. not Haiku 4.5, which takes none).
 
@@ -384,6 +386,21 @@ $default): string)`. Without it the English defaults are used. Keys:
 | `aiChat.export.empty`, `aiChat.export.failed` | |
 
 The widget texts are passed in its `labels` config.
+
+## Upgrading to 0.10
+
+- The conversation no longer stores `model` and `effort`: the model of a conversation
+  is the one of its latest message (`ChatService::getModelChoice()`). Drop both
+  columns from the conversation table. Messages with a null model ran on the agent
+  model - fill them, or the first message with a model selection starts a new
+  session:
+
+```sql
+UPDATE ai_message SET model = 'claude-sonnet-4-6', effort = 'high' WHERE model IS NULL;
+```
+
+  (your agent model and table name). `ConversationInterface` lost
+  `get/setModel()` and `get/setEffort()`.
 
 ## Upgrading to 0.9
 
