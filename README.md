@@ -557,7 +557,9 @@ shows it collapsed above the reply.
 Data is found by:
 
 1. patterns (`Pseudonymizer::DEFAULT_PATTERNS`, CZ/SK flavoured: birth numbers,
-   e-mails, phones, bank accounts, IBAN) - work without anything else,
+   e-mails, phones, bank accounts, IBAN) - work without anything else; birth numbers
+   and IBANs must pass their checksum and a phone is not an amount (`125 000 000 Kč`),
+   so order numbers and sums stay readable,
 2. a `PiiDetector` - `OpenAiCompatiblePiiDetector` asks an OpenAI-compatible chat
    completions API (a qwen or llama on your infrastructure, the text must not leave
    it) for names in any form, addresses, birth dates, document numbers ...,

@@ -37,7 +37,7 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 		$this->conversation = $conversation;
 		$this->resolver = new FakeSubjectResolver(
 			subjects: [
-				'885512/3457' => self::SUBJECT,
+				'885512/3453' => self::SUBJECT,
 				'zofie@example.test' => self::SUBJECT,
 				'777 123 987' => self::SUBJECT,
 				'PS-77001' => self::SUBJECT,
@@ -52,7 +52,7 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 	{
 		$result = $this->pseudonymizer()->pseudonymize(
 			$this->conversation,
-			'RČ 885512/3457, tel. 777 123 987, napiš na zofie@example.test',
+			'RČ 885512/3453, tel. 777 123 987, napiš na zofie@example.test',
 		);
 
 		$this->assertSame('RČ [PACIENT #7], tel. [PACIENT #7], napiš na [PACIENT #7]', $result->replaced);
@@ -64,21 +64,21 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 	{
 		$pseudonymizer = $this->pseudonymizer();
 
-		$first = $pseudonymizer->pseudonymize($this->conversation, 'RČ 0101011234 a 0202021234, e-mail x@example.test');
-		$second = $pseudonymizer->pseudonymize($this->conversation, 'Ještě 0202021234 a 0303031234.');
+		$first = $pseudonymizer->pseudonymize($this->conversation, 'RČ 0101011240 a 0202021237, e-mail x@example.test');
+		$second = $pseudonymizer->pseudonymize($this->conversation, 'Ještě 0202021237 a 0303031234.');
 
 		$this->assertSame('RČ [RČ_1] a [RČ_2], e-mail [EMAIL_1]', $first->replaced);
 		$this->assertSame(['EMAIL' => 1, 'RČ' => 2], $first->findings);
 		$this->assertSame('Ještě [RČ_2] a [RČ_3].', $second->replaced, 'The same value keeps its anchor in the conversation');
 		$this->assertSame(
-			['[RČ_1]' => '0101011234', '[RČ_2]' => '0202021234', '[EMAIL_1]' => 'x@example.test', '[RČ_3]' => '0303031234'],
+			['[RČ_1]' => '0101011240', '[RČ_2]' => '0202021237', '[EMAIL_1]' => 'x@example.test', '[RČ_3]' => '0303031234'],
 			$this->pseudonyms(),
 		);
 	}
 
 	public function testTheNoteIsAddedOnlyForTheAi(): void
 	{
-		$result = $this->pseudonymizer()->pseudonymize($this->conversation, 'RČ 0101011234');
+		$result = $this->pseudonymizer()->pseudonymize($this->conversation, 'RČ 0101011240');
 
 		$this->assertSame('RČ [RČ_1]', $result->replaced);
 		$this->assertStringStartsWith("RČ [RČ_1]\n\n[Poznámka: [PACIENT #123]", $result->forAi);
@@ -100,11 +100,50 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 	{
 		$result = $this->pseudonymizer()->pseudonymize(
 			$this->conversation,
-			'Vrať zálohu za 10/2026 na 19-2000145399/0800 nebo CZ65 0800 0000 1920 0014 5399, RČ 885512/3457.',
+			'Vrať zálohu za 10/2026 na 19-2000145399/0800 nebo CZ65 0800 0000 1920 0014 5399, RČ 885512/3453.',
 		);
 
 		$this->assertSame('Vrať zálohu za 10/2026 na [ÚČET_1] nebo [ÚČET_2], RČ [PACIENT #7].', $result->replaced);
 		$this->assertSame(['PACIENT' => 1, 'ÚČET' => 2], $result->findings);
+	}
+
+	public function testAmountsAndIdsAreNotPersonalData(): void
+	{
+		$text = 'Obrat 2025 byl 125 000 000 Kč, loni 1 125 000 000, záloha 250 000 000,- a 300 000 000 EUR. '
+			. 'Objednávka 2024001234, faktura 990101/1234, účet CZ65 0800 0000 1920 0014 5390.';
+
+		$result = $this->pseudonymizer()->pseudonymize($this->conversation, $text);
+
+		$this->assertSame($text, $result->forAi);
+		$this->assertSame([], $this->pseudonyms());
+	}
+
+	public function testValidNumbersNextToAmountsAreStillFound(): void
+	{
+		$result = $this->pseudonymizer()->pseudonymize(
+			$this->conversation,
+			'Zaplatil 125 000 000 Kč, volej +420 777 000 111, RČ 535221/123 a 0453210010.',
+		);
+
+		$this->assertSame('Zaplatil 125 000 000 Kč, volej [TELEFON_1], RČ [RČ_1] a [RČ_2].', $result->replaced);
+	}
+
+	public function testBirthNumberValidation(): void
+	{
+		foreach (['885512/3453', '0101011240', '535221/123', '0453210010', '7801010020', '0472150008'] as $valid) {
+			$this->assertTrue(Pseudonymizer::isBirthNumber($valid), $valid);
+		}
+		// Checksum, the 9 digits after 1954, a month or day out of range, the remainder 10 since 1985
+		foreach (['885512/3457', '2024001234', '885512/345', '881301/0008', '880132/0000', '8501010090'] as $invalid) {
+			$this->assertFalse(Pseudonymizer::isBirthNumber($invalid), $invalid);
+		}
+	}
+
+	public function testIbanValidation(): void
+	{
+		$this->assertTrue(Pseudonymizer::isIban('CZ65 0800 0000 1920 0014 5399'));
+		$this->assertTrue(Pseudonymizer::isIban('SK3112000000198742637541'));
+		$this->assertFalse(Pseudonymizer::isIban('CZ65 0800 0000 1920 0014 5390'));
 	}
 
 	public function testDetectorFindingsGetAnchorsAndRestore(): void
@@ -170,7 +209,7 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 		$pseudonymizer = $this->pseudonymizer(new OpenAiCompatiblePiiDetector(null, null, required: true));
 
 		try {
-			$pseudonymizer->pseudonymize($this->conversation, 'Paní Neexistující má RČ 0101011234.');
+			$pseudonymizer->pseudonymize($this->conversation, 'Paní Neexistující má RČ 0101011240.');
 			$this->fail('The required check must stop the text.');
 		} catch (PiiCheckUnavailableException $e) {
 			$this->assertSame(PiiCheckUnavailableException::TRANSLATION_KEY, $e->getTranslationKey());
@@ -183,7 +222,7 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 
 	public function testFailedDetectorStopsTheTextOnlyWhenRequired(): void
 	{
-		$text = 'Paní Neexistující má RČ 0101011234.';
+		$text = 'Paní Neexistující má RČ 0101011240.';
 		foreach (['outage' => new \RuntimeException('Connection refused'), 'no JSON' => 'I do not know.'] as $case => $response) {
 			try {
 				$this->pseudonymizer(new ScriptedPiiDetector($response, required: true))->pseudonymize($this->conversation, $text);
@@ -194,7 +233,7 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 
 			$result = $this->pseudonymizer(new ScriptedPiiDetector($response))->pseudonymize($this->conversation, $text);
 			$this->assertFalse($result->detectorChecked, $case);
-			$this->assertStringNotContainsString('0101011234', $result->forAi, "$case: the patterns still apply");
+			$this->assertStringNotContainsString('0101011240', $result->forAi, "$case: the patterns still apply");
 		}
 	}
 
@@ -202,7 +241,7 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 	{
 		$pseudonymizer = new Pseudonymizer($this->env->em, TestPseudonym::class);
 
-		$result = $pseudonymizer->pseudonymize($this->conversation, 'Mail jane@example.test, born 885512/3457.');
+		$result = $pseudonymizer->pseudonymize($this->conversation, 'Mail jane@example.test, born 885512/3453.');
 
 		$this->assertSame('Mail [EMAIL_1], born [BIRTH_NUMBER_1].', $result->replaced);
 		$this->assertStringContainsString('[SUBJECT #123] is the data subject', $result->forAi);

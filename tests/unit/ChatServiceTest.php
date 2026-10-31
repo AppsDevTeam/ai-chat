@@ -316,6 +316,24 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->assertSame('unavailable', $env->piiCheckListener->events[0][0]);
 	}
 
+	public function testTurnStoppedBeforeTheWorkerSkipsThePersonalDataCheck(): void
+	{
+		// The required check would fail - it must not even run
+		$env = $this->pseudonymizingEnvironment(new OpenAiCompatiblePiiDetector(null, null, required: true));
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->chat->enqueueMessage($conversation, 'Call 777 111 222');
+		$env->chat->cancelTurn($conversation);
+
+		$env->chat->processQueuedMessage($conversation->getId(), 'Call 777 111 222');
+
+		$reply = $env->chat->getMessages($conversation)[1];
+		$this->assertTrue($reply->isInterrupted());
+		$this->assertFalse($reply->isError());
+		$this->assertSame([], $env->client->sentEvents);
+		$this->assertSame([], $env->piiCheckListener->events);
+		$this->assertSame([], $env->em->getRepository(TestPseudonym::class)->findAll());
+	}
+
 	public function testTheTranscriptForANewSessionIsPseudonymizedToo(): void
 	{
 		$env = $this->pseudonymizingEnvironment();

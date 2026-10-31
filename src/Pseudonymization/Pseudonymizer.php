@@ -55,18 +55,20 @@ class Pseudonymizer
 		. 'will see the original data instead; when you need the data for the task, ask the user to clarify.]';
 
 	/**
-	 * Patterns in order: [kind, pattern, exclude (a match of it is not this kind)].
+	 * Patterns in order: [kind, pattern, exclude (a match of it is not this kind),
+	 * validator (optional, a match it rejects is not this kind)].
 	 * The birth number goes first, a phone would eat it otherwise (9-10 digits). The
 	 * birth number must not be a part of a bank account (19-2000145399/0800) and the
-	 * account must not take the shape of a birth number (885512/3457); MM/YYYY is not
-	 * an account.
+	 * account must not take the shape of a birth number (885512/3453); MM/YYYY is not
+	 * an account. Validators keep order numbers and IDs out (2024001234), the phone
+	 * leaves out amounts (125 000 000 Kč, 1 125 000 000).
 	 */
 	public const DEFAULT_PATTERNS = [
-		[PiiFinding::BIRTH_NUMBER, '~(?<![\d/-])(\d{6})\s*/?\s*(\d{3,4})(?![\d/])~u', null],
+		[PiiFinding::BIRTH_NUMBER, '~(?<![\d/-])(\d{6})\s*/?\s*(\d{3,4})(?![\d/])~u', null, [self::class, 'isBirthNumber']],
 		[PiiFinding::EMAIL, '~[\w.+-]+@[\w-]+(?:\.[\w-]+)+~u', null],
-		[PiiFinding::PHONE, '~(?<![\d+])(?:\+?42[01][\s-]?)?\d{3}[\s-]?\d{3}[\s-]?\d{3}(?!\d)~u', null],
+		[PiiFinding::PHONE, '~(?<![\d+])(?<!\d[\s-])(?:\+?42[01][\s-]?)?\d{3}[\s-]?\d{3}[\s-]?\d{3}(?!\d)(?![\s-]\d)(?!\s*(?:Kč|Kc|CZK|EUR|€|USD|\$|,-|korun))~iu', null],
 		[PiiFinding::BANK_ACCOUNT, '~(?<![\d/-])(?:\d{1,6}-\d{2,10}|\d{6,10})/\d{4}(?![\d/])~u', '~^\d{6}/\d{3,4}$~'],
-		[PiiFinding::BANK_ACCOUNT, '~(?<![A-Z\d])(?:CZ|SK)\d{2}(?:\s?\d{4}){5}(?!\d)~u', null],
+		[PiiFinding::BANK_ACCOUNT, '~(?<![A-Z\d])(?:CZ|SK)\d{2}(?:\s?\d{4}){5}(?!\d)~u', null, [self::class, 'isIban']],
 	];
 
 	/** @var array<string, string> */
@@ -82,7 +84,7 @@ class Pseudonymizer
 	 * @param array<string, string> $labels finding kind => anchor name ([PERSON_1])
 	 * @param string|null $note appended to the text for the AI when something was
 	 *        replaced, explains the anchors; `%1$s` = an example subject anchor
-	 * @param list<array{0: string, 1: string, 2: string|null}>|null $patterns see {@see DEFAULT_PATTERNS}
+	 * @param list<array{0: string, 1: string, 2: string|null, 3?: callable(string): bool}>|null $patterns see {@see DEFAULT_PATTERNS}
 	 * @param string $conversationField association of the pseudonym to its conversation
 	 */
 	public function __construct(
@@ -112,10 +114,16 @@ class Pseudonymizer
 
 		/** @var array<string, array{0: string, 1: string}> $spans span => [anchor, label]; numeric spans become int keys */
 		$spans = [];
-		foreach ($this->patterns ?? self::DEFAULT_PATTERNS as [$kind, $pattern, $exclude]) {
+		foreach ($this->patterns ?? self::DEFAULT_PATTERNS as $entry) {
+			[$kind, $pattern, $exclude] = $entry;
+			$validator = $entry[3] ?? null;
 			preg_match_all($pattern, $text, $matches);
 			foreach ($matches[0] as $span) {
-				if (!isset($spans[$span]) && ($exclude === null || !preg_match($exclude, $span))) {
+				if (
+					!isset($spans[$span])
+					&& ($exclude === null || !preg_match($exclude, $span))
+					&& ($validator === null || $validator($span))
+				) {
 					$this->add($spans, $conversation, new PiiFinding($span, $kind), checkReadable: true);
 				}
 			}
@@ -228,6 +236,64 @@ class Pseudonymizer
 		}
 
 		return $pseudonyms;
+	}
+
+	/**
+	 * A Czech or Slovak birth number: a real date (women +50 to the month, +20 since
+	 * 2004 when the numbers ran out) and, with 10 digits, divisible by 11 (before
+	 * 1985 also the remainder 10 with the last digit 0). 9 digits only before 1954.
+	 */
+	public static function isBirthNumber(string $value): bool
+	{
+		$digits = (string) preg_replace('~\D~', '', $value);
+		if (!preg_match('~^(\d\d)(\d\d)(\d\d)\d{3,4}$~', $digits, $m)) {
+			return false;
+		}
+
+		$year = (int) $m[1];
+		if (strlen($digits) === 9) {
+			if ($year >= 54) {
+				return false;
+			}
+			$year += 1900;
+		} else {
+			$year += $year < 54 ? 2000 : 1900;
+			$remainder = (int) substr($digits, 0, 9) % 11;
+			$valid = (int) $digits % 11 === 0 || ($year < 1985 && $remainder === 10 && $digits[9] === '0');
+			if (!$valid) {
+				return false;
+			}
+		}
+
+		$month = (int) $m[2];
+		$month -= match (true) {
+			$month > 70 => 70,
+			$month > 50 => 50,
+			$month > 20 => 20,
+			default => 0,
+		};
+
+		return checkdate($month, (int) $m[3], $year);
+	}
+
+	/** IBAN checksum (ISO 13616, mod 97). */
+	public static function isIban(string $value): bool
+	{
+		$iban = strtoupper((string) preg_replace('~\s~', '', $value));
+		if (!preg_match('~^[A-Z]{2}\d{2}[A-Z\d]+$~', $iban)) {
+			return false;
+		}
+
+		$numeric = '';
+		foreach (str_split(substr($iban, 4) . substr($iban, 0, 4)) as $char) {
+			$numeric .= ctype_alpha($char) ? (string) (ord($char) - 55) : $char;
+		}
+		$remainder = 0;
+		foreach (str_split($numeric, 7) as $chunk) {
+			$remainder = (int) ($remainder . $chunk) % 97;
+		}
+
+		return $remainder === 1;
 	}
 
 	/**

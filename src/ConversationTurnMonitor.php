@@ -43,13 +43,16 @@ class ConversationTurnMonitor implements TurnMonitor
 
 		$class = $this->em->getClassMetadata($this->conversation::class);
 
-		return $this->cancelled = $this->em->createQueryBuilder()
+		$row = $this->em->createQueryBuilder()
 			->select('c.turnCancelled')
 			->from($class->getName(), 'c')
 			->where('c.' . $class->getSingleIdentifierFieldName() . ' = :id')
 			->setParameter('id', $this->conversation->getId())
 			->getQuery()
-			->getSingleScalarResult() !== null;
+			->getOneOrNullResult();
+
+		// A conversation deleted during the turn has nobody waiting for the reply
+		return $this->cancelled = $row === null || $row['turnCancelled'] !== null;
 	}
 
 	public function onProgress(array $progress): void

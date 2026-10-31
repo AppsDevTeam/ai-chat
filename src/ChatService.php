@@ -580,8 +580,10 @@ class ChatService
 	 */
 	public function runConversationTurn(ConversationInterface $conversation, string $userMessage, array $attachments = []): MessageInterface
 	{
+		$monitor = new ConversationTurnMonitor($this->em, $conversation);
 		$pseudonymized = null;
-		if ($this->pseudonymizer !== null) {
+		// A turn stopped before the worker picked it up goes nowhere - no check needed
+		if ($this->pseudonymizer !== null && !$monitor->isCancelled()) {
 			try {
 				$pseudonymized = $this->pseudonymizer->pseudonymize($conversation, $userMessage);
 			} catch (PiiCheckUnavailableException $e) {
@@ -605,7 +607,7 @@ class ChatService
 			fn(): string => $this->buildHistoryForAi($conversation),
 			$modelChoice['model'] ?? null,
 			$modelChoice['effort'] ?? null,
-			new ConversationTurnMonitor($this->em, $conversation),
+			$monitor,
 		);
 
 		// Last line of defence: redact direct identifiers from the reply, including
