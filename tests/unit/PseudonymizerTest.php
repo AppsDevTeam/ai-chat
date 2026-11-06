@@ -261,6 +261,34 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 		);
 	}
 
+	public function testAmbiguousNameListsItsCandidatesForTheAi(): void
+	{
+		$this->resolver->candidates = ['Lukáš Svoboda' => [12, 45]];
+		$pseudonymizer = $this->pseudonymizer(ScriptedPiiDetector::returning([
+			['text' => 'Lukáše Svobody', 'kind' => 'name', 'first_name' => 'Lukáš', 'last_name' => 'Svoboda'],
+		]));
+
+		$result = $pseudonymizer->pseudonymize($this->conversation, 'Otevři kartu Lukáše Svobody');
+
+		$this->assertSame('Otevři kartu [OSOBA_1]', $result->replaced);
+		$this->assertStringEndsWith(
+			"\n[System note: [OSOBA_1] may be one of the subjects [PACIENT #12], [PACIENT #45] - if the task is about one of them, ask the user which one is meant.]",
+			$result->forAi,
+		);
+	}
+
+	public function testRestoreLinksSubjectsOnlyWhenAsked(): void
+	{
+		$this->resolver->urls = [self::SUBJECT => '/patient/detail/7'];
+		$pseudonymizer = $this->pseudonymizer();
+
+		$this->assertSame('Karta: Žofie Zkušebníková', $pseudonymizer->restore($this->conversation, 'Karta: [PACIENT #7]'));
+		$this->assertSame(
+			'Karta: [Žofie Zkušebníková](</patient/detail/7>)',
+			$pseudonymizer->restore($this->conversation, 'Karta: [PACIENT #7]', links: true),
+		);
+	}
+
 	public function testSubjectAnchorMustContainTheId(): void
 	{
 		$this->expectException(\InvalidArgumentException::class);

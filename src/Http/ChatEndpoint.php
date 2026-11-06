@@ -382,6 +382,14 @@ class ChatEndpoint
 				]];
 			} elseif ($type === 'chart' || $type === 'table') {
 				$out[] = ['tool_result' => ToolHandler::normalizeRenderResult($result)] + $thread;
+			} elseif ($type === 'navigate' && self::isLocalUrl($result['url'] ?? null)) {
+				$out[] = [
+					'tool_result' => [
+						'type' => 'navigate',
+						'url' => (string) $result['url'],
+						'title' => (string) ($result['title'] ?? ''),
+					],
+				] + $thread;
 			} elseif ($type === 'export') {
 				$out[] = [
 					'messageId' => $messageId,
@@ -396,6 +404,12 @@ class ChatEndpoint
 		}
 
 		return $out;
+	}
+
+	/** A path on this site (`/patients/12`) - a navigation never leads elsewhere. */
+	private static function isLocalUrl(mixed $url): bool
+	{
+		return is_string($url) && str_starts_with($url, '/') && !str_starts_with($url, '//') && !str_contains($url, '\\');
 	}
 
 	private function formatSender(mixed $sender): string

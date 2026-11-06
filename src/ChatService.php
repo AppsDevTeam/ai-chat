@@ -706,11 +706,16 @@ class ChatService
 
 		// After the filter: it would redact the real e-mails and phones restored here
 		if ($this->pseudonymizer !== null) {
-			$text = $this->pseudonymizer->restore($conversation, $text);
+			// The reply is markdown - subjects become links to their records
+			$text = $this->pseudonymizer->restore($conversation, $text, links: true);
 			$toolData = array_map(function (array $entry) use ($conversation): array {
 				if (($entry['tool_name'] ?? '') === 'subagent') {
 					$entry['tool_input']['task'] = $this->pseudonymizer->restore($conversation, (string) ($entry['tool_input']['task'] ?? ''));
-					$entry['tool_result']['report'] = $this->pseudonymizer->restore($conversation, (string) ($entry['tool_result']['report'] ?? ''));
+					$entry['tool_result']['report'] = $this->pseudonymizer->restore($conversation, (string) ($entry['tool_result']['report'] ?? ''), links: true);
+				}
+				// The title of a navigation is the subject's anchor for the AI, its name for the user
+				if (($entry['tool_result']['type'] ?? null) === 'navigate' && is_string($entry['tool_result']['title'] ?? null)) {
+					$entry['tool_result']['title'] = $this->pseudonymizer->restore($conversation, $entry['tool_result']['title']);
 				}
 
 				return $entry;

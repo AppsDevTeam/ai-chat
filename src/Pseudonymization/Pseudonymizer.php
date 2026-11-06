@@ -48,6 +48,10 @@ class Pseudonymizer
 
 	public const DEFAULT_SUBJECT_ANCHOR = '[SUBJECT #%s]';
 
+	/** `%1$s` = the anchor of the finding, `%2$s` = the anchors of its candidate subjects */
+	public const DEFAULT_CANDIDATES_NOTE = '[System note: %1$s may be one of the subjects %2$s - '
+		. 'if the task is about one of them, ask the user which one is meant.]';
+
 	public const DEFAULT_NOTE = '[System note: personal data in the text is replaced with anchors. '
 		. '%1$s is the data subject with id 123 - use this id in SQL and in tools and write the anchor '
 		. 'in your reply too. [PERSON_1], [EMAIL_1], [ADDRESS_1] and other anchors of the form [KIND_number] '
@@ -78,6 +82,8 @@ class Pseudonymizer
 
 	private string $note;
 
+	private string $candidatesNote;
+
 	/**
 	 * @param class-string<PseudonymInterface> $pseudonymClass
 	 * @param string $subjectAnchor the anchor of a subject, `%s` = its id
@@ -86,6 +92,8 @@ class Pseudonymizer
 	 *        replaced, explains the anchors; `%1$s` = an example subject anchor
 	 * @param list<array{0: string, 1: string, 2: string|null, 3?: callable(string): bool}>|null $patterns see {@see DEFAULT_PATTERNS}
 	 * @param string $conversationField association of the pseudonym to its conversation
+	 * @param string|null $candidatesNote appended for every anchor whose candidate subjects
+	 *        the resolver knows ({@see PiiSubjectCandidates}), see {@see DEFAULT_CANDIDATES_NOTE}
 	 */
 	public function __construct(
 		private readonly EntityManagerInterface $em,
@@ -97,6 +105,7 @@ class Pseudonymizer
 		?string $note = null,
 		private readonly ?array $patterns = null,
 		private readonly string $conversationField = 'conversation',
+		?string $candidatesNote = null,
 	) {
 		if (substr_count($subjectAnchor, '%s') !== 1) {
 			throw new \InvalidArgumentException("The subject anchor must contain %s exactly once, '$subjectAnchor' given.");
@@ -104,6 +113,7 @@ class Pseudonymizer
 		$this->labels = $labels + self::DEFAULT_LABELS;
 		$this->subjectLabel = preg_match('~^\W*([^\s#%\]]+)~u', $subjectAnchor, $m) ? $m[1] : 'SUBJECT';
 		$this->note = "\n\n" . sprintf($note ?? self::DEFAULT_NOTE, sprintf($subjectAnchor, '123'));
+		$this->candidatesNote = $candidatesNote ?? self::DEFAULT_CANDIDATES_NOTE;
 	}
 
 	/** @throws PiiCheckUnavailableException the required check did not run - the text must not go to the AI */
@@ -114,6 +124,8 @@ class Pseudonymizer
 
 		/** @var array<string, array{0: string, 1: string}> $spans span => [anchor, label]; numeric spans become int keys */
 		$spans = [];
+		/** @var array<string, list<int|string>> $candidates anchor => subjects it may belong to */
+		$candidates = [];
 		foreach ($this->patterns ?? self::DEFAULT_PATTERNS as $entry) {
 			[$kind, $pattern, $exclude] = $entry;
 			$validator = $entry[3] ?? null;
@@ -121,18 +133,18 @@ class Pseudonymizer
 			foreach ($matches[0] as $span) {
 				if (!isset($spans[$span]) && ($exclude === null || !preg_match($exclude, $span))) {
 					// An invalid number still goes when it belongs to a subject (a typo in the record)
-					$this->add($spans, $conversation, new PiiFinding($span, $kind), checkReadable: true, subjectOnly: $validator !== null && !$validator($span));
+					$this->add($spans, $candidates, $conversation, new PiiFinding($span, $kind), checkReadable: true, subjectOnly: $validator !== null && !$validator($span));
 				}
 			}
 		}
 		foreach ($detected ?? [] as $finding) {
 			if (!isset($spans[$finding->text])) {
-				$this->add($spans, $conversation, $finding, checkReadable: true);
+				$this->add($spans, $candidates, $conversation, $finding, checkReadable: true);
 			}
 		}
 		foreach ($this->resolver?->findInText($text) ?? [] as $finding) {
 			if (!isset($spans[$finding->text])) {
-				$this->add($spans, $conversation, $finding, checkReadable: false);
+				$this->add($spans, $candidates, $conversation, $finding, checkReadable: false);
 			}
 		}
 
@@ -155,17 +167,34 @@ class Pseudonymizer
 		$pattern = '~' . implode('|', array_map(self::wholeSpan(...), $surfaces)) . '~u';
 		$replaced = (string) preg_replace_callback($pattern, static fn(array $m): string => $anchors[$m[0]] ?? $m[0], $text);
 
-		return new PseudonymizedText($replaced . $this->note, $replaced, $findings, $detected !== null);
+		$note = $this->note;
+		foreach ($candidates as $anchor => $subjects) {
+			$note .= "\n" . sprintf($this->candidatesNote, $anchor, implode(', ', array_map(fn(int|string $subject): string => sprintf($this->subjectAnchor, $subject), $subjects)));
+		}
+
+		return new PseudonymizedText($replaced . $note, $replaced, $findings, $detected !== null);
 	}
 
-	/** Anchors in the reply back to the real values - for display on your side only. */
-	public function restore(ConversationInterface $conversation, string $text): string
+	/**
+	 * Anchors in the reply back to the real values - for display on your side only.
+	 * With $links a subject becomes a markdown link to its record, when the resolver
+	 * is a {@see PiiSubjectLinker} - only for text rendered as markdown.
+	 */
+	public function restore(ConversationInterface $conversation, string $text, bool $links = false): string
 	{
 		if ($this->resolver !== null) {
 			[$before, $after] = explode('%s', $this->subjectAnchor);
 			$text = (string) preg_replace_callback(
 				'~' . preg_quote($before, '~') . '([^\s\]]+?)' . preg_quote($after, '~') . '~u',
-				fn(array $m): string => $this->resolver->label($m[1]) ?? $m[0],
+				function (array $m) use ($links): string {
+					$label = $this->resolver->label($m[1]);
+					if ($label === null) {
+						return $m[0];
+					}
+					$url = $links && $this->resolver instanceof PiiSubjectLinker ? $this->resolver->url($m[1]) : null;
+
+					return $url !== null ? '[' . addcslashes($label, '[]') . '](<' . str_replace(['<', '>'], ['%3C', '%3E'], $url) . '>)' : $label;
+				},
 				$text,
 			);
 		}
@@ -178,8 +207,11 @@ class Pseudonymizer
 		return $map ? strtr($text, $map) : $text;
 	}
 
-	/** @param array<string, array{0: string, 1: string}> $spans */
-	private function add(array &$spans, ConversationInterface $conversation, PiiFinding $finding, bool $checkReadable, bool $subjectOnly = false): void
+	/**
+	 * @param array<string, array{0: string, 1: string}> $spans
+	 * @param array<string, list<int|string>> $candidates
+	 */
+	private function add(array &$spans, array &$candidates, ConversationInterface $conversation, PiiFinding $finding, bool $checkReadable, bool $subjectOnly = false): void
 	{
 		$subject = $finding->subject ?? $this->resolver?->resolve($finding);
 		if ($subject === null && $subjectOnly) {
@@ -194,7 +226,12 @@ class Pseudonymizer
 			return;
 		}
 		$label = $this->labels[$finding->kind] ?? $this->labels[PiiFinding::OTHER];
-		$spans[$finding->text] = [$this->anchor($conversation, $label, $finding->text), $label];
+		$anchor = $this->anchor($conversation, $label, $finding->text);
+		$spans[$finding->text] = [$anchor, $label];
+		$subjects = $this->resolver instanceof PiiSubjectCandidates ? $this->resolver->candidates($finding) : [];
+		if ($subjects !== []) {
+			$candidates[$anchor] = $subjects;
+		}
 	}
 
 	/** The anchor of the value in the conversation - an existing one, or a new [LABEL_n] */

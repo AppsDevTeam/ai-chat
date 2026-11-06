@@ -434,7 +434,8 @@
 	margin: 8px 0 4px;
 }
 
-.ai-chat__table-export {
+.ai-chat__table-export,
+.ai-chat__navigate {
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
@@ -451,13 +452,17 @@
 
 .ai-chat__table-export:hover,
 .ai-chat__table-export:focus,
-.ai-chat__table-export:active {
+.ai-chat__table-export:active,
+.ai-chat__navigate:hover,
+.ai-chat__navigate:focus,
+.ai-chat__navigate:active {
 	background-color: var(--ai-chat-primary);
 	color: #fff;
 	text-decoration: none;
 }
 
-.ai-chat__table-export i {
+.ai-chat__table-export i,
+.ai-chat__navigate i {
 	font-size: 12px;
 }
 

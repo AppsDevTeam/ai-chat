@@ -395,6 +395,16 @@ $download->stream();
 The button label is `labels.download` (the client-side CSV of a table keeps
 `labels.exportCsv`).
 
+A tool that **opens a page** of your application (a record the user asked for)
+returns `{type: navigate, url, title?}` - `url` a path on your site (`/clients/12`;
+anything else never reaches the browser), `title` what the button says, e.g. the
+subject's anchor `[CLIENT #12]` (the AI sees the anchor, the user its label). On a
+fresh reply the widget dispatches a cancelable `ai-chat:navigate` `{url, title,
+auto: true}`; a page that can show the URL without leaving the chat (load it behind
+a chat panel) calls `preventDefault()`. Clicks on links to your site in replies and
+on the button (`labels.open`, icon `open`) dispatch the same event with `auto:
+false`; unhandled, they open a new tab and an unhandled auto navigation does nothing.
+
 ## MCP server
 
 `Mcp\McpServer` publishes the data tools (`get_database_schema`, `execute_sql`) over
@@ -489,6 +499,14 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.3
+
+Nothing breaks. New: tool results `{type: navigate}` and the event `ai-chat:navigate`
+([Project tools and downloads](#project-tools-and-downloads)), resolver interfaces
+`PiiSubjectCandidates` and `PiiSubjectLinker` and the `candidatesNote` argument of
+`Pseudonymizer` ([Input pseudonymization](#input-pseudonymization)). Projects with a
+custom `labels` / `icons` config may add `open`.
 
 ## Upgrading to 1.2 (input pseudonymization)
 
@@ -704,6 +722,17 @@ $pseudonymizer = new Pseudonymizer(
 
 $chat = new ChatService(..., logger: $logger, pseudonymizer: $pseudonymizer, piiCheckListener: $audit);
 ```
+
+**Ambiguous names and links.** A resolver may also implement:
+
+- `PiiSubjectCandidates::candidates($finding)` - the few subjects a finding without
+  a subject may be (two clients of the same name). The text for the AI gets a line
+  per such anchor (`candidatesNote`, default `DEFAULT_CANDIDATES_NOTE`): "[PERSON_1]
+  may be one of the subjects [CLIENT #12], [CLIENT #45] - ask the user which one is
+  meant". In the reply the user sees their names.
+- `PiiSubjectLinker::url($subject)` - the record of the subject. The stored reply
+  (and reports of subagents) then show subjects as markdown links `[label](<url>)`;
+  `restore($conversation, $text, links: true)`.
 
 **Required check.** With `required: true` (the default) a detector that is not
 configured, fails or returns no JSON stops the message: nothing goes to the AI, no

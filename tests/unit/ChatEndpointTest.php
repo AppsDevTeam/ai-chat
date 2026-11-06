@@ -100,6 +100,20 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		], $this->env->endpoint->clientToolData($toolData, 5));
 	}
 
+	public function testNavigationOnlyToThisSite(): void
+	{
+		$toolData = [
+			['tool_name' => 'open_card', 'tool_input' => ['id' => 12], 'tool_result' => ['type' => 'navigate', 'url' => '/patient/detail/12', 'title' => 'Jan', 'id' => 12]],
+			['tool_name' => 'open_card', 'tool_input' => [], 'tool_result' => ['type' => 'navigate', 'url' => 'https://evil.example/x']],
+			['tool_name' => 'open_card', 'tool_input' => [], 'tool_result' => ['type' => 'navigate', 'url' => '//evil.example/x']],
+			['tool_name' => 'open_card', 'tool_input' => [], 'tool_result' => ['type' => 'navigate', 'url' => '/\\evil.example']],
+		];
+
+		$this->assertSame([
+			['tool_result' => ['type' => 'navigate', 'url' => '/patient/detail/12', 'title' => 'Jan']],
+		], $this->env->endpoint->clientToolData($toolData, 5));
+	}
+
 	public function testStoredStringifiedTableRowsAreDecoded(): void
 	{
 		$toolData = [[

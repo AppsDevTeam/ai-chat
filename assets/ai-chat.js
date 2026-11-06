@@ -66,6 +66,11 @@
  * Events dispatched on the root element (bubbling):
  *   ai-chat:conversation  {conversation}  created, renamed, rated or a reply arrived
  *   ai-chat:deleted       {id}
+ *   ai-chat:navigate      {url, title, auto}  cancelable - a link to this site in a reply
+ *                         was clicked (auto false), or a fresh reply of a tool asks to
+ *                         open a page (`{type: navigate}`, auto true). preventDefault()
+ *                         = the page handled it (e.g. loaded the page behind the chat);
+ *                         otherwise a click opens a new tab and an auto one does nothing.
  */
 
 const DEFAULT_LABELS = {
@@ -84,6 +89,7 @@ const DEFAULT_LABELS = {
 	welcomeSingle: 'Ask anything about your data.',
 	exportCsv: 'Download CSV',
 	download: 'Download',
+	open: 'Open',
 	contextLabel: 'Conversation context',
 	contextOk: 'I remember the whole conversation.',
 	contextWarn: 'The conversation is getting long - I will start forgetting the beginning soon.',
@@ -124,6 +130,7 @@ const DEFAULT_ICONS = {
 	file: 'fa-solid fa-file',
 	remove: 'fa-solid fa-xmark',
 	download: 'fa-solid fa-download',
+	open: 'fa-solid fa-arrow-up-right-from-square',
 	error: 'fa-solid fa-triangle-exclamation',
 	spinner: 'fa-solid fa-spinner fa-spin',
 	welcome: 'fa-solid fa-comments',
@@ -289,6 +296,7 @@ export class AiChat {
 		]);
 
 		this.messages = el('div', { class: 'ai-chat__messages' });
+		this.messages.addEventListener('click', (e) => this.onLinkClick(e));
 
 		this.fileInput = el('input', { type: 'file', class: 'ai-chat__file-input', multiple: true, hidden: true });
 		if (this.config.accept) {
@@ -1042,6 +1050,7 @@ export class AiChat {
 
 			if (messages.some((message) => message.author !== 'user' || message.error)) {
 				this.setLoading(false);
+				this.navigateTo(messages);
 				this.setTitle(data.conversation?.title);
 				this.updateContextUsage(data.contextUsage);
 				this.conversation = data.conversation ?? this.conversation;
@@ -1255,8 +1264,55 @@ export class AiChat {
 		if (result.type === 'export') {
 			return this.renderExport(result, entry.messageId);
 		}
+		if (result.type === 'navigate') {
+			return this.renderNavigate(result);
+		}
 
 		return null;
+	}
+
+	/** A button to the page a tool opened - to get back to it later. */
+	renderNavigate(result) {
+		return el('div', { class: 'ai-chat__table-actions' }, [
+			el('a', { href: result.url, class: 'btn btn-sm ai-chat__navigate', target: '_blank', rel: 'noopener noreferrer' }, [
+				icon(this.icons.open), ' ' + (result.title ? result.title + ' – ' : '') + this.labels.open,
+			]),
+		]);
+	}
+
+	/** A link to this site in a reply: the page may open it itself ({@see navigate()}). */
+	onLinkClick(e) {
+		const link = e.target.closest('a[href]');
+		if (!link || link.hasAttribute('download') || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
+			return;
+		}
+		const url = new URL(link.href, window.location.href);
+		if (url.origin !== window.location.origin) {
+			return;
+		}
+		if (this.navigate(url.pathname + url.search + url.hash, link.textContent.trim(), false)) {
+			e.preventDefault();
+		}
+	}
+
+	/** Dispatches ai-chat:navigate; true when the page handled it. */
+	navigate(url, title, auto) {
+		const event = new CustomEvent('ai-chat:navigate', { bubbles: true, cancelable: true, detail: { url, title, auto } });
+
+		return !this.root.dispatchEvent(event);
+	}
+
+	/** The last page a fresh reply asks to open (tool result {type: navigate}). */
+	navigateTo(messages) {
+		const results = messages
+			.filter((message) => message.author === 'ai' && !message.error)
+			.flatMap((message) => message.tool_data || [])
+			.map((entry) => entry.tool_result || {})
+			.filter((result) => result.type === 'navigate' && result.url);
+		const last = results[results.length - 1];
+		if (last) {
+			this.navigate(last.url, last.title || '', true);
+		}
 	}
 
 	/**

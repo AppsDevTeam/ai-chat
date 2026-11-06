@@ -5,22 +5,28 @@ declare(strict_types=1);
 namespace ADT\AiChat\Tests\Support;
 
 use ADT\AiChat\Pseudonymization\PiiFinding;
+use ADT\AiChat\Pseudonymization\PiiSubjectCandidates;
+use ADT\AiChat\Pseudonymization\PiiSubjectLinker;
 use ADT\AiChat\Pseudonymization\PiiSubjectResolver;
 
 /** Subjects from arrays instead of a database. */
-final class FakeSubjectResolver implements PiiSubjectResolver
+final class FakeSubjectResolver implements PiiSubjectResolver, PiiSubjectCandidates, PiiSubjectLinker
 {
 	/**
 	 * @param array<string, int> $subjects span, or "first last" of a name => subject id
 	 * @param list<string> $readable spans that stay readable (employees)
 	 * @param list<PiiFinding> $inText findings of findInText() when their span is in the text
 	 * @param array<int, string> $labels subject id => full name
+	 * @param array<string, list<int>> $candidates span, or "first last" of a name => subjects it may be
+	 * @param array<int, string> $urls subject id => URL of its record
 	 */
 	public function __construct(
 		public array $subjects = [],
 		public array $readable = [],
 		public array $inText = [],
 		public array $labels = [],
+		public array $candidates = [],
+		public array $urls = [],
 	) {
 	}
 
@@ -44,5 +50,17 @@ final class FakeSubjectResolver implements PiiSubjectResolver
 	public function label(int|string $subject): ?string
 	{
 		return $this->labels[(int) $subject] ?? null;
+	}
+
+	public function candidates(PiiFinding $finding): array
+	{
+		$name = trim($finding->firstName . ' ' . $finding->lastName);
+
+		return $this->candidates[$finding->text] ?? ($name !== '' ? $this->candidates[$name] ?? [] : []);
+	}
+
+	public function url(int|string $subject): ?string
+	{
+		return $this->urls[(int) $subject] ?? null;
 	}
 }
