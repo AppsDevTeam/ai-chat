@@ -490,6 +490,21 @@ $default): string)`. Without it the English defaults are used. Keys:
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
 
+## Upgrading to 1.2 (input pseudonymization)
+
+- `MessageInterface` has `getSentContent()` / `setSentContent()` - the trait
+  implements them and maps a new column, so every project needs a migration:
+
+  ```sql
+  ALTER TABLE ai_message ADD sent_content LONGTEXT DEFAULT NULL;
+  ```
+
+  Implementations without `MessageTrait` have to add the methods.
+- `ChatEndpoint::clientMessage()` returns `sent_content`; the widget renders it
+  (label `sentContent`, icon `sentContent`, styles `.ai-chat__sent*`).
+- Nothing else changes until you pass a `Pseudonymizer` to `ChatService` - see
+  [Input pseudonymization](#input-pseudonymization) for its table.
+
 ## Upgrading to 1.1
 
 Nothing breaks. New MCP token classes (`McpToken`, `McpTokenTrait`, `McpTokenGenerator`,
@@ -513,21 +528,6 @@ the columns adt/fancyadmin already has (`name`, `token_hash`, `expires_at`,
 - Widget: server-side downloads are labelled `labels.download` (default "Download");
   `labels.exportCsv` stays for the CSV of a table.
 - New `Mcp\DownloadStore` for files of MCP tools.
-
-## Adopting input pseudonymization
-
-- `MessageInterface` has `getSentContent()` / `setSentContent()` - the trait
-  implements them and maps a new column, so every project needs a migration:
-
-  ```sql
-  ALTER TABLE ai_message ADD sent_content LONGTEXT DEFAULT NULL;
-  ```
-
-  Implementations without `MessageTrait` have to add the methods.
-- `ChatEndpoint::clientMessage()` returns `sent_content`; the widget renders it
-  (label `sentContent`, icon `sentContent`, styles `.ai-chat__sent*`).
-- Nothing else changes until you pass a `Pseudonymizer` to `ChatService` - see
-  [Input pseudonymization](#input-pseudonymization) for its table.
 
 ## Upgrading to 0.11
 
