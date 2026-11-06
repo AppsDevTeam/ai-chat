@@ -31,7 +31,7 @@ class AgentTurnRunner
 
 	/**
 	 * @param callable(): AgentResolution $agentResolver resolves the agent and
-	 *        environment for a new session; see {@see AgentProvisioner::resolver()}
+	 *        environment at the start of every turn; see {@see AgentProvisioner::resolver()}
 	 */
 	public function __construct(
 		private readonly ManagedAgentsClient $client,
@@ -82,8 +82,21 @@ class AgentTurnRunner
 			return new TurnResult('', [], 0, 0, true);
 		}
 
+		// Every turn: keeps the agent current after a deploy (an unchanged one costs no
+		// API call). A session keeps the agent version it was created with - on an
+		// outdated agent (other tools, prompt) the turn starts a new one with the transcript.
+		$resolution = ($this->agentResolver)();
+		if (
+			($conversation->getSessionId() ?? '') !== ''
+			&& $resolution->fingerprint !== null
+			&& $conversation->getSessionAgent() !== $resolution->fingerprint
+		) {
+			$conversation->setSessionId(null);
+			$persistSessionId(null);
+		}
+
 		$reusedExisting = ($conversation->getSessionId() ?? '') !== '';
-		$sessionId = $this->ensureSession($conversation, $persistSessionId, $model, $effort);
+		$sessionId = $this->ensureSession($conversation, $persistSessionId, $resolution, $model, $effort);
 
 		try {
 			return $this->runSessionTurn($sessionId, $userMessage, $attachments, !$reusedExisting && $history !== null ? $history() : '', $monitor);
@@ -95,7 +108,7 @@ class AgentTurnRunner
 			$conversation->setSessionId(null);
 			$persistSessionId(null);
 
-			$sessionId = $this->ensureSession($conversation, $persistSessionId, $model, $effort);
+			$sessionId = $this->ensureSession($conversation, $persistSessionId, $resolution, $model, $effort);
 
 			return $this->runSessionTurn($sessionId, $userMessage, $attachments, $history !== null ? $history() : '', $monitor);
 		}
@@ -105,14 +118,12 @@ class AgentTurnRunner
 	 * @param callable(?string): void $persistSessionId
 	 * @throws AiChatException
 	 */
-	private function ensureSession(ConversationInterface $conversation, callable $persistSessionId, ?string $model, ?string $effort): string
+	private function ensureSession(ConversationInterface $conversation, callable $persistSessionId, AgentResolution $resolution, ?string $model, ?string $effort): string
 	{
 		$existing = $conversation->getSessionId();
 		if ($existing !== null && $existing !== '') {
 			return $existing;
 		}
-
-		$resolution = ($this->agentResolver)();
 
 		$session = $this->client->createSession(
 			$resolution->agentId,
@@ -128,6 +139,7 @@ class AgentTurnRunner
 		}
 
 		$conversation->setSessionId($sessionId);
+		$conversation->setSessionAgent($resolution->fingerprint);
 		$persistSessionId($sessionId);
 
 		return $sessionId;

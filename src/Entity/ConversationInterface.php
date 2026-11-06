@@ -28,6 +28,11 @@ interface ConversationInterface
 
 	public function setSessionId(?string $sessionId): static;
 
+	/** Fingerprint of the agent the session was created with; null for a session from before 1.4. */
+	public function getSessionAgent(): ?string;
+
+	public function setSessionAgent(?string $sessionAgent): static;
+
 	public function isDeleted(): bool;
 
 	public function setDeleted(bool $deleted): static;

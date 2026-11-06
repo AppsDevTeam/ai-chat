@@ -185,10 +185,13 @@ works under a strict CSP; colours are CSS variables (`--ai-chat-*`).
 
 ### 5. Provisioning the agent
 
-Nothing to do in the deploy: `AgentProvisioner::resolver()` runs before every new
-session, creates the agent and environment when the schema has none, and updates
+Nothing to do in the deploy: `AgentProvisioner::resolver()` runs at the start of
+every turn, creates the agent and environment when the schema has none, and updates
 the same agent (new version, same id) when the system prompt or the tool
-definitions changed. Changes are detected by a fingerprint stored on the mapping
+definitions changed. A session keeps the agent version it was created with, so the
+conversation remembers it (`ConversationTrait::$sessionAgent`, the fingerprint): a
+conversation whose session runs on an older agent starts a new session with the
+transcript on its next message - new tools reach running conversations too. Changes are detected by a fingerprint stored on the mapping
 (`AgentTrait::$fingerprint`), so an unchanged agent costs no API call. The deploy
 thus needs no API key, and a broken key of one tenant fails only that tenant's
 chat.
@@ -499,6 +502,22 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.4
+
+- `ConversationInterface` has `getSessionAgent()` / `setSessionAgent()` - the trait
+  implements them and maps a new column, so every project needs a migration:
+
+  ```sql
+  ALTER TABLE ai_conversation ADD session_agent VARCHAR(64) DEFAULT NULL;
+  ```
+
+  Implementations without `ConversationTrait` have to add the methods.
+- The agent resolver runs at the start of every turn, not only for a new session;
+  `AgentResolution` has an optional `fingerprint`. A custom resolver without it
+  keeps reusing sessions as before.
+- Existing conversations have no `session_agent` yet: their next message starts a
+  new session with the transcript (once), on the current agent.
 
 ## Upgrading to 1.3
 

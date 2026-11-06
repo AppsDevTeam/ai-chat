@@ -24,7 +24,7 @@ class AgentTurnRunnerTest extends \Codeception\Test\Unit
 		$this->toolCalls = [];
 	}
 
-	private function runner(float $idleTimeout = 1.0, int $maxToolCalls = 5, float $maxTurnSeconds = 60): AgentTurnRunner
+	private function runner(float $idleTimeout = 1.0, int $maxToolCalls = 5, float $maxTurnSeconds = 60, ?string $agentFingerprint = null): AgentTurnRunner
 	{
 		$toolExecutor = new class ($this->toolCalls) implements ToolExecutor {
 			public function __construct(private array &$calls)
@@ -49,7 +49,7 @@ class AgentTurnRunnerTest extends \Codeception\Test\Unit
 		return new AgentTurnRunner(
 			$this->client,
 			$toolExecutor,
-			fn(): AgentResolution => new AgentResolution('agent_1', 'env_1'),
+			fn(): AgentResolution => new AgentResolution('agent_1', 'env_1', $agentFingerprint),
 			// pollIntervalMicroseconds = 0, so tests do not sleep
 			new AiChatOptions(0, $idleTimeout, $maxToolCalls, maxTurnSeconds: $maxTurnSeconds, interruptGraceSeconds: 0.2),
 		);
@@ -471,6 +471,58 @@ class AgentTurnRunnerTest extends \Codeception\Test\Unit
 		$this->runner()->run($this->conversation('sesn_stuck'), 'x', fn() => null, [], fn(): string => 'HISTORY');
 
 		$this->assertSame([['type' => 'text', 'text' => 'HISTORY'], ['type' => 'text', 'text' => 'x']], end($this->client->sentEvents)[0]['content']);
+	}
+
+	public function testSessionOnAnOutdatedAgentIsReplacedWithTheHistory(): void
+	{
+		$this->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Ok']]],
+			['id' => 'e2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+		$conversation = $this->conversation('sesn_old');
+		$conversation->setSessionAgent('fp_old');
+
+		$this->runner(agentFingerprint: 'fp_new')->run($conversation, 'x', fn() => null, [], fn(): string => 'HISTORY');
+
+		$this->assertSame(['sesn_1'], $this->client->createdSessionIds, 'The agent changed - a new session');
+		$this->assertSame('sesn_1', $conversation->getSessionId());
+		$this->assertSame('fp_new', $conversation->getSessionAgent());
+		$this->assertSame([['type' => 'text', 'text' => 'HISTORY'], ['type' => 'text', 'text' => 'x']], end($this->client->sentEvents)[0]['content']);
+	}
+
+	public function testSessionFromBeforeTheFingerprintIsReplacedOnce(): void
+	{
+		$this->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Ok']]],
+			['id' => 'e2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+		$conversation = $this->conversation('sesn_legacy');
+		$runner = $this->runner(agentFingerprint: 'fp');
+
+		$runner->run($conversation, 'x', fn() => null, [], fn(): string => 'HISTORY');
+		$this->client->script([[
+			['id' => 'e3', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Ok']]],
+			['id' => 'e4', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]]);
+		$runner->run($conversation, 'y', fn() => null, [], function (): string {
+			$this->fail('The session is current now - no history.');
+		});
+
+		$this->assertSame(['sesn_1'], $this->client->createdSessionIds);
+	}
+
+	public function testUnknownFingerprintKeepsTheSession(): void
+	{
+		$this->client->frames = [[
+			['id' => 'e1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Ok']]],
+			['id' => 'e2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+		]];
+		$conversation = $this->conversation('sesn_existing');
+
+		$this->runner()->run($conversation, 'x', fn() => null, [], fn(): string => 'HISTORY');
+
+		$this->assertSame([], $this->client->createdSessionIds, 'A resolver without a fingerprint - sessions are reused');
+		$this->assertSame('sesn_existing', $conversation->getSessionId());
 	}
 
 	public function testFreshSessionFailureIsNotRetried(): void

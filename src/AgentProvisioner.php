@@ -13,7 +13,7 @@ use Doctrine\ORM\EntityManagerInterface;
  * Provisions the Managed Agents agent and environment for an anonymized schema
  * (= one instance of your application) and stores the mapping.
  *
- * Lazily by default: {@see resolver()} runs before every new session and
+ * Lazily by default: {@see resolver()} runs before every turn and
  * - creates the agent and environment when the schema has none yet,
  * - updates the SAME agent (new version, same id) when the system prompt or the
  *   tools changed since the last provisioning - detected by a fingerprint stored on
@@ -144,9 +144,10 @@ class AgentProvisioner
 	}
 
 	/**
-	 * Resolver for {@see AgentTurnRunner}, called whenever a new session is created:
+	 * Resolver for {@see AgentTurnRunner}, called at the start of every turn:
 	 * provisions the agent when it is missing and updates it when the system prompt
-	 * or the tools changed, so a deploy does not have to.
+	 * or the tools changed, so a deploy does not have to. The fingerprint it returns
+	 * tells the runner whether the conversation's session still runs on this agent.
 	 *
 	 * @return callable(): AgentResolution
 	 */
@@ -164,7 +165,7 @@ class AgentProvisioner
 				);
 			}
 
-			return new AgentResolution($agent->getAgentId(), $agent->getEnvironmentId());
+			return new AgentResolution($agent->getAgentId(), $agent->getEnvironmentId(), $agent->getFingerprint());
 		};
 	}
 }

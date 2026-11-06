@@ -34,6 +34,14 @@ trait ConversationTrait
 	#[Description('Anthropic Managed Agents session ID holding the server-side conversation state.')]
 	protected ?string $sessionId = null;
 
+	/**
+	 * The agent (system prompt, tools) the session was created with - a session keeps
+	 * its agent version, so after a change the next turn starts a new session.
+	 */
+	#[ORM\Column(name: 'session_agent', length: 64, nullable: true)]
+	#[Description('Fingerprint of the agent version (system prompt and tools) the Managed Agents session was created with.')]
+	protected ?string $sessionAgent = null;
+
 	#[ORM\Column(options: ['default' => false])]
 	#[Description('Soft-delete flag; true means the conversation is deleted and no longer shown to the user.')]
 	protected bool $deleted = false;
@@ -91,6 +99,17 @@ trait ConversationTrait
 	public function setSessionId(?string $sessionId): static
 	{
 		$this->sessionId = $sessionId;
+		return $this;
+	}
+
+	public function getSessionAgent(): ?string
+	{
+		return $this->sessionAgent;
+	}
+
+	public function setSessionAgent(?string $sessionAgent): static
+	{
+		$this->sessionAgent = $sessionAgent;
 		return $this;
 	}
 
