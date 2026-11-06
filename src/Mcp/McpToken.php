@@ -13,7 +13,13 @@ use DateTimeImmutable;
  */
 interface McpToken
 {
-	public function getId(): int|string|null;
+	/**
+	 * Without a return type on purpose: entity interfaces often declare an untyped
+	 * getId() and an interface extending both would not compile otherwise.
+	 *
+	 * @return int|string|null
+	 */
+	public function getId();
 
 	/** The user the client acts as (your identity / user entity). */
 	public function getTokenOwner(): mixed;
