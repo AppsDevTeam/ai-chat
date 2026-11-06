@@ -50,4 +50,17 @@ class PiiResponseFilterTest extends \Codeception\Test\Unit
 		// ...and the Czech one no longer does.
 		$this->assertStringContainsString('+420 601 234 567', $filter->filter('+420 601 234 567'));
 	}
+
+	/** A download link a tool returned stays usable; e-mails in URLs are still redacted. */
+	public function testTokensInsideUrlsAreKept(): void
+	{
+		$filter = new PiiResponseFilter();
+		$token = str_repeat('ab12', 12);
+
+		$this->assertSame(
+			'https://example.com/download/' . $token . ' and [redacted: secret token]',
+			$filter->filter('https://example.com/download/' . $token . ' and ' . $token),
+		);
+		$this->assertSame('https://example.com/?to=[redacted e-mail]', $filter->filter('https://example.com/?to=jan@example.com'));
+	}
 }

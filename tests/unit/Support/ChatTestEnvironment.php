@@ -41,7 +41,10 @@ final class ChatTestEnvironment
 
 	private int $scriptedTurns = 0;
 
-	public function __construct(?ChatOptions $options = null)
+	/**
+	 * @param list<\ADT\AiChat\Tool\Tool> $tools project tools next to the ToolHandler
+	 */
+	public function __construct(?ChatOptions $options = null, array $tools = [])
 	{
 		$paths = [__DIR__ . '/Entity'];
 		$config = method_exists(ORMSetup::class, 'createAttributeMetadataConfig')
@@ -59,7 +62,9 @@ final class ChatTestEnvironment
 		$this->queryExecutor = StubQueryExecutor::withTables(['client']);
 		$this->dispatcher = new RecordingDispatcher();
 
-		$toolHandler = new ToolHandler($this->queryExecutor);
+		$toolHandler = $tools
+			? new \ADT\AiChat\Tool\CompositeToolExecutor(new ToolHandler($this->queryExecutor), $tools)
+			: new ToolHandler($this->queryExecutor);
 		$provisioner = new AgentProvisioner(
 			$this->client,
 			new SystemPromptBuilder($this->queryExecutor, SystemPromptBuilder::defaultTemplatePath()),

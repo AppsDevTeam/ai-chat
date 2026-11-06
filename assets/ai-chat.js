@@ -83,6 +83,7 @@ const DEFAULT_LABELS = {
 	welcome: 'Pick an existing conversation or start a new one.',
 	welcomeSingle: 'Ask anything about your data.',
 	exportCsv: 'Download CSV',
+	download: 'Download',
 	contextLabel: 'Conversation context',
 	contextOk: 'I remember the whole conversation.',
 	contextWarn: 'The conversation is getting long - I will start forgetting the beginning soon.',
@@ -1404,7 +1405,7 @@ export class AiChat {
 
 		return el('div', { class: 'ai-chat__table-actions' }, [
 			el('a', { href: href.toString(), class: 'btn btn-sm ai-chat__table-export', download: result.filename || '' }, [
-				icon(this.icons.download), ' ' + (result.title ? result.title + ' – ' : '') + this.labels.exportCsv,
+				icon(this.icons.download), ' ' + (result.title ? result.title + ' – ' : '') + this.labels.download,
 			]),
 		]);
 	}
