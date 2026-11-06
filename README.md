@@ -419,9 +419,31 @@ $response = $server->handle($request->getMethod(), $request->getBody(), ['user' 
 // -> $response->status, $response->headers, $response->body (null = no body)
 ```
 
-Authentication and authorization stay in your application: check the bearer token
-and the user's permission first and answer `McpResponse::unauthorized()` /
-`McpResponse::forbidden()` otherwise. The tools are read-only over the read-only
+**Personal tokens.** `McpEndpoint` does the whole endpoint - HTTP method, bearer
+token, then the server run as the token owner:
+
+```php
+// your token entity: implements Mcp\McpToken, uses Mcp\McpTokenTrait (name, token_hash,
+// expires_at, last_used_at) + its own id, owner association and creation time
+$endpoint = new McpEndpoint($server, new McpTokenAuthenticator($em, McpTokenEntity::class, $policy));
+
+// in the controller (no session, no CSRF, no sign-in redirect):
+$response = $endpoint->handle($request->getMethod(), $request->getHeader('Authorization'), $request->getBody());
+```
+
+`McpTokenPolicy` is yours: `canSignIn($owner)` (the same rules as a sign-in; false =
+401), `isAllowed($owner)` (the permission for external AI; false = 403) and
+`runAs($owner, $handle)` - sign the owner in statelessly when project tools need it,
+otherwise just `return $handle()`. Tokens are made by `McpTokenGenerator::generate()`
+and stored as `McpTokenGenerator::hash()` (SHA-256 hex); the readable token is shown
+once. `lastUsedAt` is written at most once a minute. Your own API for external AI can
+reuse the same tokens: `McpTokenAuthenticator::authenticate($authorizationHeader)`
+returns the token or throws `McpTokenException` (`status` 401/403, `reason` for your
+own message).
+
+Without the token classes, authentication and authorization stay in your application:
+check the bearer token and the user's permission first and answer
+`McpResponse::unauthorized()` / `McpResponse::forbidden()` otherwise. The tools are read-only over the read-only
 account, results are row-capped like in the chat, and chat-only tools (charts,
 tables, CSV export) are never exposed.
 
@@ -467,6 +489,13 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.1
+
+Nothing breaks. New MCP token classes (`McpToken`, `McpTokenTrait`, `McpTokenGenerator`,
+`McpTokenPolicy`, `McpTokenAuthenticator`, `McpEndpoint`) - see MCP server. The trait maps
+the columns adt/fancyadmin already has (`name`, `token_hash`, `expires_at`,
+`last_used_at`), so switching needs no migration there.
 
 ## Upgrading to 1.0
 
