@@ -895,8 +895,8 @@ export class AiChat {
 			content: text,
 			attachments: files.map((file) => ({ filename: file.name, mediaType: file.type, size: file.size })),
 		});
-		this.scrollToBottom();
 		this.setLoading(true);
+		this.scrollToBottom();
 
 		const body = new FormData();
 		body.append('conversationId', this.conversationId ?? '');
@@ -1530,8 +1530,15 @@ export class AiChat {
 		this.contextNew.hidden = level !== 'full' || this.readOnly;
 	}
 
+	/**
+	 * To the newest message - now and once more after the layout settles (the loading
+	 * indicator, the rating box or a panel that was just opened change the height).
+	 */
 	scrollToBottom() {
 		this.messages.scrollTop = this.messages.scrollHeight;
+		requestAnimationFrame(() => {
+			this.messages.scrollTop = this.messages.scrollHeight;
+		});
 	}
 
 	scrollToMessage(item) {
