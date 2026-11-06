@@ -274,4 +274,40 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		$this->assertSame('table', $toolData[1]['tool_result']['type']);
 		$this->assertSame('th_a', $toolData[1]['thread']);
 	}
+
+	/** A project ExportTool makes its file when the button is clicked, from the stored input. */
+	public function testExportOfAProjectTool(): void
+	{
+		$env = new ChatTestEnvironment(tools: [\CompositeToolExecutorTest::reportTool()]);
+		$owner = $env->owner();
+		$conversation = $env->chat->createConversation($owner);
+		$message = (new TestMessage())
+			->setConversation($conversation)
+			->setAuthor('ai')
+			->setContent('Report ready')
+			->setCreated(new \DateTimeImmutable())
+			->setToolData([[
+				'tool_name' => 'monthly_report',
+				'tool_input' => ['month' => '2026-10'],
+				'tool_result' => ['type' => 'export', 'token' => 'rep1', 'filename' => 'report.txt', 'total' => 42],
+			]]);
+		$env->em->persist($message);
+		$env->em->flush();
+
+		$this->assertNull($env->endpoint->export($owner, $conversation->getId(), $message->getId(), 'wrong'));
+
+		$download = $env->endpoint->export($owner, $conversation->getId(), $message->getId(), 'rep1');
+		$this->assertNotNull($download);
+		$this->assertSame('text/plain', $download->getHeaders()['Content-Type']);
+		$this->assertStringContainsString('filename="report.txt"', $download->getHeaders()['Content-Disposition']);
+
+		$out = fopen('php://memory', 'w+');
+		$download->stream($out);
+		rewind($out);
+		$this->assertSame('month 2026-10', stream_get_contents($out));
+
+		// The widget gets the button, never the input.
+		$client = $env->endpoint->clientToolData($message->getToolData(), $message->getId());
+		$this->assertSame(['type' => 'export', 'title' => '', 'filename' => 'report.txt', 'token' => 'rep1'], $client[0]['tool_result']);
+	}
 }

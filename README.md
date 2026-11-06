@@ -130,6 +130,20 @@ $chat = new ChatService($em, $client, $toolHandler, $queryExecutor, $provisioner
 With adt/background-queue register the callback
 `aiChatProcessMessage: [@ADT\AiChat\ChatService, processQueuedMessage]`.
 
+**Run the turn as the user who asked.** The queue worker has nobody signed in, so
+project tools and permission-scoped queries would see nothing. `setUserScope()` gets
+the author of the turn - the sender of the latest user message (`senderField`),
+otherwise the owner (`getTurnAuthor()`) - and the turn to run; sign them in for its
+duration only, the worker serves other users next:
+
+```php
+$chat->setUserScope(function (?User $user, callable $turn) use ($securityUser): void {
+    $user !== null ? $securityUser->runAs($user, $turn) : $turn(); // stateless, in memory
+});
+```
+
+A scope that throws before the turn runs stores an error reply, like a failed turn.
+
 Everything taking an owner scopes the data to it - a foreign conversation reads as
 "not found". Who may see whose conversations is your decision
 (`findConversation()` skips the check for privileged views).
@@ -353,6 +367,34 @@ Media types follow the content-block rules: `image/jpeg|png|gif|webp` become ima
 blocks, `application/pdf` and `text/plain` document blocks. Other text formats
 (CSV, Markdown, logs) go as `text/plain` - the filename keeps the extension.
 
+## Project tools and downloads
+
+Beyond the built-in tools write your own `Tool\Tool` (name, definition, `handle()`)
+and put them together with the `ToolHandler`:
+
+```php
+$tools = new CompositeToolExecutor($toolHandler, [new MonthlyReportTool(...)]);
+// to ChatService and AgentProvisioner instead of $toolHandler (the agent is updated
+// on the next session) and/or to the McpServer
+```
+
+A tool that gives the user a **file** implements `Tool\ExportTool`: `handle()` returns
+`{type: export, token, filename, title?}` (plus what the model should see) and the
+widget renders a download button from it. The file is made only when the user clicks:
+`ChatEndpoint::export()` finds the stored call by the token and calls
+`export($input, $result)` of the tool - in the web request of whoever downloads, so
+check their permission there - and returns a `Http\Download` (`FileDownload` for a
+file on disk, `CsvExport` for export_csv). Send its headers and stream it:
+
+```php
+$download = $endpoint->export($owner, $conversationId, $messageId, $token) ?? throw new NotFound;
+foreach ($download->getHeaders() as $name => $value) { header("$name: $value"); }
+$download->stream();
+```
+
+The button label is `labels.download` (the client-side CSV of a table keeps
+`labels.exportCsv`).
+
 ## MCP server
 
 `Mcp\McpServer` publishes the data tools (`get_database_schema`, `execute_sql`) over
@@ -382,6 +424,13 @@ and the user's permission first and answer `McpResponse::unauthorized()` /
 `McpResponse::forbidden()` otherwise. The tools are read-only over the read-only
 account, results are row-capped like in the chat, and chat-only tools (charts,
 tables, CSV export) are never exposed.
+
+**Files over MCP.** A tool result is text, so an MCP tool gives a file as a
+short-lived link: `Mcp\DownloadStore` keeps the file under a random token (only its
+hash on disk, valid an hour by default) and you route e.g. `mcp/download/<token>`
+(`DownloadStore::TOKEN_PATTERN`) to `find()`. The link needs no Authorization header -
+the client downloads it with `curl -o file.xlsx "<url>"`. Tokens in URLs are left
+alone by `PiiResponseFilter`.
 
 Connect a client:
 
@@ -419,7 +468,24 @@ $default): string)`. Without it the English defaults are used. Keys:
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
 
-## Upgrading to 0.8
+## Upgrading to 1.0
+
+- `ChatEndpoint::export()` returns `Http\Download` (was `CsvExport`, which now
+  implements it) - `getHeaders()` and `stream()` work as before. It serves the files
+  of project `Tool\ExportTool`s too, not only export_csv.
+- `ChatService::findExport()` returns `{tool, input, result}` of any tool whose
+  result is `{type: export}` (was `{sql, filename, title}` of export_csv).
+- New `Tool\Tool`, `Tool\ExportTool`, `Tool\CompositeToolExecutor` - drop your own
+  composite executors and export lookups.
+- New `ChatService::setUserScope()` / `getTurnAuthor()` - drop worker wrappers that
+  only sign the user in around `processQueuedMessage()`.
+- `PiiResponseFilter` no longer redacts secrets inside URLs (e-mails, accounts and
+  phones in them still are).
+- Widget: server-side downloads are labelled `labels.download` (default "Download");
+  `labels.exportCsv` stays for the CSV of a table.
+- New `Mcp\DownloadStore` for files of MCP tools.
+
+## Adopting input pseudonymization
 
 - `MessageInterface` has `getSentContent()` / `setSentContent()` - the trait
   implements them and maps a new column, so every project needs a migration:
@@ -433,7 +499,6 @@ summary of the "what the AI received" block).
   (label `sentContent`, icon `sentContent`, styles `.ai-chat__sent*`).
 - Nothing else changes until you pass a `Pseudonymizer` to `ChatService` - see
   [Input pseudonymization](#input-pseudonymization) for its table.
-- The JS widget follows the PHP versions again (`adt-ai-chat` 0.8.0).
 
 ## Upgrading to 0.11
 
@@ -526,7 +591,7 @@ UPDATE ai_message SET model = 'claude-sonnet-4-6', effort = 'high' WHERE model I
 | `render_chart` / `render_table` | displayable results for your frontend |
 | `export_csv` | validates the SQL and returns a download token; your endpoint streams the rows later via `ReadOnlyQueryExecutor::streamQuery()` (never through the model) |
 
-Different tool set? Implement `ToolExecutor` yourself.
+More tools? Add `Tool\Tool`s with `Tool\CompositeToolExecutor` (see Project tools and downloads); a completely different set? Implement `ToolExecutor` yourself.
 
 ## Output redaction
 

@@ -12,7 +12,7 @@ namespace ADT\AiChat;
  * Two mechanisms:
  *  - built-in patterns for values a regex can detect reliably: e-mail addresses,
  *    phone numbers with an international prefix, IBAN and CZ/SK bank accounts,
- *    and secrets (JWT, long hex/base64 strings),
+ *    and secrets (JWT, long hex/base64 strings - not inside URLs),
  *  - literal VALUE redaction for everything a regex cannot tell from ordinary
  *    text (names, birth dates): {@see filter()} receives the concrete values that
  *    appeared in personal-data columns of SQL results (see
@@ -59,6 +59,22 @@ class PiiResponseFilter
 	{
 		$text = $this->redactValues($text, $piiValues);
 
+		// Tokens inside URLs are left alone - a download link a tool returned would be
+		// useless with its token redacted. URLs are hidden from the secret patterns only;
+		// e-mails, accounts and phones in them are still redacted.
+		$urls = [];
+		$text = (string) preg_replace_callback('~\bhttps?://[^\s<>"\'`)\]]+~i', static function (array $m) use (&$urls): string {
+			$urls[] = $m[0];
+
+			return "\u{E000}" . (count($urls) - 1) . "\u{E001}";
+		}, $text);
+
+		foreach ($this->secretPatterns() as $pattern) {
+			$text = (string) preg_replace($pattern, $this->labels['secret'], $text);
+		}
+
+		$text = (string) preg_replace_callback('~\x{E000}(\d+)\x{E001}~u', static fn(array $m): string => $urls[(int) $m[1]], $text);
+
 		foreach ($this->patterns() as [$pattern, $replacement]) {
 			$text = (string) preg_replace($pattern, $replacement, $text);
 		}
@@ -67,20 +83,28 @@ class PiiResponseFilter
 	}
 
 	/**
-	 * Patterns in order - more specific ones (token, IBAN) go before generic ones
-	 * so they do not overlap.
+	 * Secrets: JWT, long hex (>= 32) or base64-like string (>= 40) = token/password/hash.
+	 *
+	 * @return list<string>
+	 */
+	private function secretPatterns(): array
+	{
+		return [
+			'~\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b~',
+			'~\b[0-9a-fA-F]{32,}\b~',
+			'~\b[A-Za-z0-9+/]{40,}={0,2}\b~',
+		];
+	}
+
+	/**
+	 * Patterns after the secrets, in order - more specific ones (IBAN) go before
+	 * generic ones so they do not overlap.
 	 *
 	 * @return list<array{0: string, 1: string}>
 	 */
 	private function patterns(): array
 	{
 		return [
-			// SECRET - JWT (three base64url segments separated by dots).
-			['~\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b~', $this->labels['secret']],
-			// SECRET - long hex (>= 32) or base64-like string (>= 40) = token/password/hash.
-			['~\b[0-9a-fA-F]{32,}\b~', $this->labels['secret']],
-			['~\b[A-Za-z0-9+/]{40,}={0,2}\b~', $this->labels['secret']],
-
 			// EMAIL.
 			['~\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b~', $this->labels['email']],
 

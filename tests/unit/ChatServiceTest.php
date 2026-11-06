@@ -254,7 +254,11 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		]);
 
 		$this->assertSame(
-			['sql' => 'SELECT * FROM client', 'filename' => 'clients.csv', 'title' => 'Clients'],
+			[
+				'tool' => 'export_csv',
+				'input' => ['sql' => 'SELECT * FROM client'],
+				'result' => ['type' => 'export', 'token' => 'tok123', 'filename' => 'clients.csv', 'title' => 'Clients'],
+			],
 			$this->env->chat->findExport($message, 'tok123'),
 		);
 		$this->assertNull($this->env->chat->findExport($message, 'wrong'));
@@ -657,5 +661,58 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->env->chat->enqueueMessage($conversation, 'Again');
 
 		$this->assertStringContainsString("User: Hi\n\n[the user stopped this reply]", $this->env->chat->buildHistory($conversation));
+	}
+
+	public function testTurnRunsInTheUserScopeOfTheOwner(): void
+	{
+		$owner = $this->env->owner();
+		$conversation = $this->env->chat->createConversation($owner);
+		$this->env->chat->enqueueMessage($conversation, 'Hi');
+		$this->env->scriptReply('Hello');
+
+		$seen = [];
+		$this->env->chat->setUserScope(function (mixed $user, callable $turn) use (&$seen): void {
+			$seen[] = $user;
+			$turn();
+		});
+		$this->env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$this->assertSame([$owner], $seen);
+		$this->assertSame('Hello', $this->env->chat->getMessages($conversation)[1]->getContent());
+	}
+
+	/** A colleague writes into the conversation - the turn answers them, not the owner. */
+	public function testTurnAuthorIsTheSenderOfTheLatestUserMessage(): void
+	{
+		$env = new ChatTestEnvironment(new ChatOptions(
+			TestConversation::class,
+			TestMessage::class,
+			ownerField: 'owner',
+			senderField: 'sender',
+			pendingTurnSeconds: 0,
+		));
+		$alice = $env->owner();
+		$bob = $env->owner();
+		$conversation = $env->chat->createConversation($alice);
+
+		$env->chat->enqueueMessage($conversation, 'mine');
+		$this->assertSame($alice, $env->chat->getTurnAuthor($conversation));
+
+		$env->chat->enqueueMessage($conversation, 'continuing', sender: $bob);
+		$this->assertSame($bob, $env->chat->getTurnAuthor($conversation));
+	}
+
+	public function testFailingUserScopeStoresAnErrorReply(): void
+	{
+		$conversation = $this->env->chat->createConversation($this->env->owner());
+		$this->env->chat->setUserScope(static function (): void {
+			throw new \RuntimeException('cannot sign in');
+		});
+
+		$this->env->chat->processQueuedMessage($conversation->getId(), 'Hi');
+
+		$messages = $this->env->chat->getMessages($conversation);
+		$this->assertCount(1, $messages);
+		$this->assertTrue($messages[0]->isError());
 	}
 }

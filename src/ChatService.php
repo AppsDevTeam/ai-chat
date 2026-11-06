@@ -13,6 +13,8 @@ use ADT\AiChat\Exception\TurnTimeoutException;
 use ADT\AiChat\Pseudonymization\PiiCheckListener;
 use ADT\AiChat\Pseudonymization\PiiCheckUnavailableException;
 use ADT\AiChat\Pseudonymization\Pseudonymizer;
+use ADT\AiChat\Tool\ExportTool;
+use ADT\AiChat\Tool\ExportToolProvider;
 use ADT\DoctrineAnonymization\ReadOnlyQueryExecutor;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -46,6 +48,9 @@ class ChatService
 	/** @var (callable(string, array<string, scalar>, string): string)|null */
 	private $translator = null;
 
+	/** @var (callable(mixed, callable(): void): void)|null */
+	private $userScope = null;
+
 	public function __construct(
 		private readonly EntityManagerInterface $em,
 		private readonly ManagedAgentsClient $client,
@@ -72,6 +77,25 @@ class ChatService
 	public function setTranslator(callable $translator): static
 	{
 		$this->translator = $translator;
+		return $this;
+	}
+
+	/**
+	 * Runs every worker turn as the user who asked ({@see getTurnAuthor()}). The queue
+	 * worker has nobody signed in - project tools and permission-scoped queries would
+	 * see nothing. The scope signs the user in (stateless, in memory only), calls
+	 * $turn and signs them out again; the worker processes jobs of other users next.
+	 *
+	 *   $chatService->setUserScope(function (?User $user, callable $turn): void {
+	 *       $user ? $securityUser->runAs($user, $turn) : $turn();
+	 *   });
+	 *
+	 * @param callable(mixed $user, callable(): void $turn): void $scope $user is null
+	 *        when the conversation has no owner any more
+	 */
+	public function setUserScope(callable $scope): static
+	{
+		$this->userScope = $scope;
 		return $this;
 	}
 
@@ -543,6 +567,57 @@ class ChatService
 			return;
 		}
 
+		if ($this->userScope === null) {
+			$this->processTurn($conversation, $userMessage, $attachments);
+
+			return;
+		}
+
+		$ran = false;
+		try {
+			($this->userScope)($this->getTurnAuthor($conversation), function () use ($conversation, $userMessage, $attachments, &$ran): void {
+				$ran = true;
+				$this->processTurn($conversation, $userMessage, $attachments);
+			});
+		} catch (\Throwable $e) {
+			// A failing scope (e.g. the user cannot be signed in) must not send the job back;
+			// without a reply the widget would wait for nothing.
+			$this->logger?->error($e->getMessage(), ['exception' => $e]);
+			if (!$ran) {
+				$this->storeErrorReply($conversation, $e);
+			}
+		}
+	}
+
+	/**
+	 * Whom the turn answers: the sender of the latest user message (a colleague may write
+	 * into a shared conversation, {@see ChatOptions::$senderField}), otherwise the owner.
+	 */
+	public function getTurnAuthor(ConversationInterface $conversation): mixed
+	{
+		if ($this->options->senderField !== null) {
+			foreach (array_reverse($this->getMessages($conversation)) as $message) {
+				if ($message->getAuthor() === MessageInterface::AUTHOR_USER) {
+					$sender = $this->getSender($message);
+					if ($sender !== null) {
+						return $sender;
+					}
+
+					break;
+				}
+			}
+		}
+
+		return $this->getOwner($conversation);
+	}
+
+	/**
+	 * @param list<array{fileId: string, mediaType: string, filename?: string}> $attachments
+	 */
+	private function processTurn(ConversationInterface $conversation, string $userMessage, array $attachments): void
+	{
+		$conversationId = $conversation->getId();
+
 		try {
 			$this->runConversationTurn($conversation, $userMessage, $attachments);
 		} catch (\Throwable $e) {
@@ -556,13 +631,18 @@ class ChatService
 				$this->logger?->error($e->getMessage(), ['exception' => $e]);
 			}
 
-			try {
-				$this->addMessage($conversation, $this->describeError($e), MessageInterface::AUTHOR_AI, error: true);
-				$conversation->setUpdated(new \DateTimeImmutable());
-				$this->em->flush();
-			} catch (\Throwable $saveError) {
-				$this->logger?->error($saveError->getMessage(), ['exception' => $saveError]);
-			}
+			$this->storeErrorReply($conversation, $e);
+		}
+	}
+
+	private function storeErrorReply(ConversationInterface $conversation, \Throwable $e): void
+	{
+		try {
+			$this->addMessage($conversation, $this->describeError($e), MessageInterface::AUTHOR_AI, error: true);
+			$conversation->setUpdated(new \DateTimeImmutable());
+			$this->em->flush();
+		} catch (\Throwable $saveError) {
+			$this->logger?->error($saveError->getMessage(), ['exception' => $saveError]);
 		}
 	}
 
@@ -695,10 +775,11 @@ class ChatService
 	}
 
 	/**
-	 * Looks a server-side export (the export_csv tool) up by its token. The SQL comes
-	 * from the stored, already validated tool input - it never travels to the browser.
+	 * The stored call behind a download button: the tool, its input and result whose
+	 * result is `{type: export}` with this token - export_csv or a project
+	 * {@see ExportTool}. Null for a wrong or empty token.
 	 *
-	 * @return array{sql: string, filename: string, title: string}|null
+	 * @return array{tool: string, input: array<string, mixed>, result: array<string, mixed>}|null
 	 */
 	public function findExport(MessageInterface $message, string $token): ?array
 	{
@@ -707,26 +788,26 @@ class ChatService
 		}
 
 		foreach ($message->getToolData() ?? [] as $entry) {
-			if (($entry['tool_name'] ?? '') !== 'export_csv') {
-				continue;
-			}
-
 			$result = (array) ($entry['tool_result'] ?? []);
 			$resultToken = (string) ($result['token'] ?? '');
 			if (($result['type'] ?? '') !== 'export' || $resultToken === '' || !hash_equals($resultToken, $token)) {
 				continue;
 			}
 
-			$sql = (string) ($entry['tool_input']['sql'] ?? '');
-
-			return $sql !== '' ? [
-				'sql' => $sql,
-				'filename' => (string) ($result['filename'] ?? 'export.csv'),
-				'title' => (string) ($result['title'] ?? ''),
-			] : null;
+			return [
+				'tool' => (string) ($entry['tool_name'] ?? ''),
+				'input' => (array) ($entry['tool_input'] ?? []),
+				'result' => $result,
+			];
 		}
 
 		return null;
+	}
+
+	/** The project tool that makes the file of a download button, if the executor has it. */
+	public function findExportTool(string $name): ?ExportTool
+	{
+		return $this->toolExecutor instanceof ExportToolProvider ? $this->toolExecutor->findExportTool($name) : null;
 	}
 
 	/**

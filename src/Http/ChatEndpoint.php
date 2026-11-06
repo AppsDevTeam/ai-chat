@@ -224,13 +224,14 @@ class ChatEndpoint
 	}
 
 	/**
-	 * A server-side CSV export of the export_csv tool, or null when the token does
-	 * not match (answer 404). The SQL is looked up in the stored message, not taken
-	 * from the request.
+	 * The file behind a download button, or null when the token does not belong to the
+	 * message (or the conversation to the owner): the CSV of export_csv streamed from
+	 * the anonymized views, or the file of a project {@see \ADT\AiChat\Tool\ExportTool}
+	 * made now, in the request of whoever downloads.
 	 *
-	 * @throws AiChatException when the stored query no longer passes validation
+	 * @throws AiChatException when the stored export is no longer valid
 	 */
-	public function export(object|int|string $owner, int|string $conversationId, int|string $messageId, string $token): ?CsvExport
+	public function export(object|int|string $owner, int|string $conversationId, int|string $messageId, string $token): ?Download
 	{
 		$conversation = $this->chat->getConversation($conversationId, $owner);
 		$message = $conversation !== null ? $this->chat->getMessage($conversation, $messageId) : null;
@@ -240,18 +241,26 @@ class ChatEndpoint
 			return null;
 		}
 
+		if ($export['tool'] !== 'export_csv') {
+			$tool = $this->chat->findExportTool($export['tool']);
+
+			return $tool?->export($export['input'], $export['result']);
+		}
+
+		$sql = (string) ($export['input']['sql'] ?? '');
+
 		// Validate BEFORE the file starts streaming.
 		try {
-			$this->queryExecutor->validateQuery($export['sql']);
+			$this->queryExecutor->validateQuery($sql);
 		} catch (QueryNotAllowedException $e) {
 			throw AiChatException::translatable('Invalid export query.', 'aiChat.error.invalidExport', [], $e);
 		}
 
-		$filename = basename(str_replace('\\', '/', $export['filename']));
+		$filename = basename(str_replace('\\', '/', (string) ($export['result']['filename'] ?? '')));
 
 		return new CsvExport(
 			$this->queryExecutor,
-			$export['sql'],
+			$sql,
 			$filename !== '' ? $filename : 'export.csv',
 			$this->chat->translate('aiChat.export.empty', [], 'The export contains no data.'),
 			$this->chat->translate('aiChat.export.failed', [], 'Export failed'),

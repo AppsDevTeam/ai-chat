@@ -45,8 +45,9 @@ final class ChatTestEnvironment
 
 	/**
 	 * @param (\Closure(EntityManager): Pseudonymizer)|null $pseudonymizer
+	 * @param list<\ADT\AiChat\Tool\Tool> $tools project tools next to the ToolHandler
 	 */
-	public function __construct(?ChatOptions $options = null, ?\Closure $pseudonymizer = null)
+	public function __construct(?ChatOptions $options = null, ?\Closure $pseudonymizer = null, array $tools = [])
 	{
 		$paths = [__DIR__ . '/Entity'];
 		$config = method_exists(ORMSetup::class, 'createAttributeMetadataConfig')
@@ -64,7 +65,9 @@ final class ChatTestEnvironment
 		$this->queryExecutor = StubQueryExecutor::withTables(['client']);
 		$this->dispatcher = new RecordingDispatcher();
 
-		$toolHandler = new ToolHandler($this->queryExecutor);
+		$toolHandler = $tools
+			? new \ADT\AiChat\Tool\CompositeToolExecutor(new ToolHandler($this->queryExecutor), $tools)
+			: new ToolHandler($this->queryExecutor);
 		$provisioner = new AgentProvisioner(
 			$this->client,
 			new SystemPromptBuilder($this->queryExecutor, SystemPromptBuilder::defaultTemplatePath()),

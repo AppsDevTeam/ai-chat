@@ -15,7 +15,7 @@ use ADT\DoctrineAnonymization\ReadOnlyQueryExecutor;
  * error cannot corrupt half a file - failures during streaming are written into
  * the file instead of producing a mysteriously empty one.
  */
-final class CsvExport
+final class CsvExport implements Download
 {
 	/** @var (callable(\Throwable): void)|null */
 	private $onError;
@@ -41,14 +41,7 @@ final class CsvExport
 	 */
 	public function getHeaders(): array
 	{
-		$ascii = preg_replace('/[^A-Za-z0-9._-]+/', '_', $this->filename) ?: 'export.csv';
-
-		return [
-			'Content-Type' => 'text/csv; charset=UTF-8',
-			'Content-Disposition' => 'attachment; filename="' . $ascii . '"; filename*=UTF-8\'\'' . rawurlencode($this->filename),
-			'Cache-Control' => 'no-store',
-			'X-Content-Type-Options' => 'nosniff',
-		];
+		return FileDownload::attachmentHeaders($this->filename !== '' ? $this->filename : 'export.csv', 'text/csv; charset=UTF-8');
 	}
 
 	/**
