@@ -27,12 +27,15 @@ class ModelSelection
 	 * @param list<string> $efforts effort levels to offer; empty sends no effort (the model default)
 	 * @param string|null $defaultModel null = the first of $models
 	 * @param string|null $defaultEffort null or a level not in $efforts = the first of $efforts
+	 * @param bool $selectable false = the widget offers no choice, the model comes from the
+	 *        {@see ModelRouter} (or the default) only
 	 */
 	public function __construct(
 		public readonly array $models = [],
 		public readonly array $efforts = self::DEFAULT_EFFORTS,
 		public readonly ?string $defaultModel = null,
 		public readonly ?string $defaultEffort = 'high',
+		public readonly bool $selectable = true,
 	) {
 		if ($defaultModel !== null && !isset($models[$defaultModel])) {
 			throw new \InvalidArgumentException(sprintf('The default model "%s" is not among the models.', $defaultModel));
@@ -100,6 +103,11 @@ class ModelSelection
 		return ['model' => $model, 'effort' => $effort];
 	}
 
+	public function has(string $model): bool
+	{
+		return isset($this->models[$model]);
+	}
+
 	/** Context window of the model, or the fallback for an unknown or null model. */
 	public function getContextWindow(?string $model, int $fallback): int
 	{
@@ -113,7 +121,7 @@ class ModelSelection
 	 */
 	public function toClient(): ?array
 	{
-		if (!$this->isEnabled()) {
+		if (!$this->isEnabled() || !$this->selectable) {
 			return null;
 		}
 

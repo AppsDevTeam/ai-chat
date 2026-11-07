@@ -47,7 +47,7 @@ final class ChatTestEnvironment
 	 * @param (\Closure(EntityManager): Pseudonymizer)|null $pseudonymizer
 	 * @param list<\ADT\AiChat\Tool\Tool> $tools project tools next to the ToolHandler
 	 */
-	public function __construct(?ChatOptions $options = null, ?\Closure $pseudonymizer = null, array $tools = [])
+	public function __construct(?ChatOptions $options = null, ?\Closure $pseudonymizer = null, array $tools = [], ?\ADT\AiChat\ModelRouter $modelRouter = null)
 	{
 		$paths = [__DIR__ . '/Entity'];
 		$config = method_exists(ORMSetup::class, 'createAttributeMetadataConfig')
@@ -91,6 +91,7 @@ final class ChatTestEnvironment
 			new AiChatOptions(0, 0.2, 5),
 			pseudonymizer: $pseudonymizer !== null ? $pseudonymizer($this->em) : null,
 			piiCheckListener: $this->piiCheckListener,
+			modelRouter: $modelRouter,
 		);
 
 		$this->endpoint = new ChatEndpoint($this->chat, $this->queryExecutor);

@@ -299,6 +299,14 @@ Without models (the default) the selection is off, messages keep a null model
 and run on the model of the agent. Only offer models that support the listed effort
 levels (e.g. not Haiku 4.5, which takes none).
 
+**Model router.** Pass a `ModelRouter` to `ChatService` (`modelRouter:`, autowired in DI)
+to pick the model of a new conversation from its first message - a quick command to a
+small fast model, an analysis to a large one. It is asked only for the first message and
+only when the user did not pick a model; later messages keep it (a switch would start a
+new session). It runs in the web request, keep it fast (rules, a local classifier); an
+unknown id or null means the default. `ModelSelection(selectable: false)` hides the
+selects in the widget, so the router (or the default) decides alone.
+
 ### Rating
 
 With `urls.rate` in the widget config the owner can rate a conversation that has a
@@ -517,6 +525,12 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.7
+
+Nothing breaks. New: `ModelRouter` (optional last argument `modelRouter` of
+`ChatService`) and `ModelSelection(selectable: false)` / `ModelSelection::has()`
+([Model selection](#model-selection)).
 
 ## Upgrading to 1.6
 

@@ -584,7 +584,7 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->assertNull($conversation->getRating());
 	}
 
-	private function withModelSelection(): ChatTestEnvironment
+	private function withModelSelection(?\ADT\AiChat\ModelRouter $router = null, bool $selectable = true): ChatTestEnvironment
 	{
 		return new ChatTestEnvironment(new ChatOptions(
 			TestConversation::class,
@@ -593,8 +593,52 @@ class ChatServiceTest extends \Codeception\Test\Unit
 			modelSelection: new ModelSelection([
 				'claude-sonnet-5-5' => ['label' => 'Sonnet 5.5', 'contextWindowTokens' => 1000000],
 				'claude-opus-5-5' => ['label' => 'Opus 5.5', 'contextWindowTokens' => 1000000],
-			]),
-		));
+			], selectable: $selectable),
+		), modelRouter: $router);
+	}
+
+	public function testRouterPicksTheModelOfANewConversationOnly(): void
+	{
+		$router = new class implements \ADT\AiChat\ModelRouter {
+			public function route(string $userMessage): ?string
+			{
+				return str_contains($userMessage, 'analyze') ? 'claude-opus-5-5' : 'unknown-model';
+			}
+		};
+		$env = $this->withModelSelection($router, selectable: false);
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Please analyze last year');
+		$this->assertSame('claude-opus-5-5', $env->chat->getModelChoice($conversation)['model']);
+
+		// A later message keeps the model - a switch would start a new session
+		$env->chat->processQueuedMessage($conversation->getId(), 'Please analyze last year');
+		$env->chat->enqueueMessage($conversation, 'thanks');
+		$this->assertSame('claude-opus-5-5', $env->chat->getModelChoice($conversation)['model']);
+
+		// An unknown id from the router = the default
+		$other = $env->chat->createConversation($env->owner());
+		$env->chat->enqueueMessage($other, 'hello');
+		$this->assertSame('claude-sonnet-5-5', $env->chat->getModelChoice($other)['model']);
+
+		// No picker in the widget when the router decides
+		$this->assertNull($env->chat->getOptions()->modelSelection->toClient());
+	}
+
+	public function testUserChoiceWinsOverTheRouter(): void
+	{
+		$router = new class implements \ADT\AiChat\ModelRouter {
+			public function route(string $userMessage): ?string
+			{
+				return 'claude-opus-5-5';
+			}
+		};
+		$env = $this->withModelSelection($router);
+		$conversation = $env->chat->createConversation($env->owner());
+
+		$env->chat->enqueueMessage($conversation, 'Hi', [], 'claude-sonnet-5-5');
+
+		$this->assertSame('claude-sonnet-5-5', $env->chat->getModelChoice($conversation)['model']);
 	}
 
 	public function testAMessageWaitingForItsReplyBlocksTheNextOne(): void

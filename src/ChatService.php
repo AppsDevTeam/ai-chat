@@ -65,6 +65,7 @@ class ChatService
 		private readonly ?LoggerInterface $logger = null,
 		private readonly ?Pseudonymizer $pseudonymizer = null,
 		private readonly ?PiiCheckListener $piiCheckListener = null,
+		private readonly ?ModelRouter $modelRouter = null,
 	) {
 	}
 
@@ -520,6 +521,7 @@ class ChatService
 
 		// Validated before the uploads, stored only once nothing can fail anymore.
 		$current = $this->getModelChoice($conversation);
+		$model = $this->routeModel($current, $model, $userMessage);
 		$modelChoice = $current === null || ($model ?? '') !== '' || ($effort ?? '') !== ''
 			? $this->options->modelSelection->resolve($model, $effort)
 			: $current;
@@ -554,6 +556,23 @@ class ChatService
 		);
 
 		return $message;
+	}
+
+	/**
+	 * The model of a new conversation the user did not pick himself - from the
+	 * {@see ModelRouter}. Later messages keep it (a switch would start a new session).
+	 *
+	 * @param array{model: string|null, effort: string|null}|null $current
+	 */
+	private function routeModel(?array $current, ?string $model, string $userMessage): ?string
+	{
+		$selection = $this->options->modelSelection;
+		if ($current !== null || ($model ?? '') !== '' || $this->modelRouter === null || !$selection->isEnabled() || $userMessage === '') {
+			return $model;
+		}
+		$routed = $this->modelRouter->route($userMessage);
+
+		return $routed !== null && $selection->has($routed) ? $routed : $model;
 	}
 
 	/**
