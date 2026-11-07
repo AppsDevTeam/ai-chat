@@ -30,12 +30,13 @@ class BackgroundQueueMessageDispatcher implements MessageDispatcher
 	) {
 	}
 
-	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = []): void
+	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = [], ?string $context = null): void
 	{
 		$this->queue->publish($this->callbackName, [
 			'conversationId' => $conversationId,
 			'userMessage' => $userMessage,
 			'attachments' => $attachments,
-		]);
+			// Only when there is one - a callback without the parameter keeps working
+		] + ($context !== null ? ['context' => $context] : []));
 	}
 }

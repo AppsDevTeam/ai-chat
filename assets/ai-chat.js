@@ -73,6 +73,9 @@
  *                         open a page (`{type: navigate}`, auto true). preventDefault()
  *                         = the page handled it (e.g. loaded the page behind the chat);
  *                         otherwise a click opens a new tab and an auto one does nothing.
+ *   ai-chat:reply         {message, element}  a fresh reply arrived (not a loaded
+ *                         conversation) - element is its rendered message, e.g. for
+ *                         reading it aloud
  */
 
 const DEFAULT_LABELS = {
@@ -907,6 +910,9 @@ export class AiChat {
 		const body = new FormData();
 		body.append('conversationId', this.conversationId ?? '');
 		body.append('message', text);
+		// The page the user is on (a record open behind the chat) - the server may turn it
+		// into a context note for the AI ({@see ChatEndpoint::send()} $context)
+		body.append('page', window.location.pathname + window.location.search);
 		files.forEach((file) => body.append('attachments[]', file, file.name));
 
 		if (this.modelOptions) {
@@ -1062,6 +1068,11 @@ export class AiChat {
 
 			if (messages.some((message) => message.author !== 'user' || message.error)) {
 				this.setLoading(false);
+				const replyIndex = messages.findIndex((message) => message.author === 'ai' && !message.error);
+				if (replyIndex >= 0) {
+					// The rendered reply, e.g. for reading it aloud (the page picks what to read)
+					this.emit('ai-chat:reply', { message: messages[replyIndex], element: items[replyIndex] });
+				}
 				this.navigateTo(messages);
 				this.setTitle(data.conversation?.title);
 				this.updateContextUsage(data.contextUsage);

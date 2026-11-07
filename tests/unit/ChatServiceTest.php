@@ -72,6 +72,7 @@ class ChatServiceTest extends \Codeception\Test\Unit
 			'conversationId' => $conversation->getId(),
 			'userMessage' => "How many\nclients do we have?",
 			'attachments' => [],
+			'context' => null,
 		]], $this->env->dispatcher->dispatched);
 	}
 

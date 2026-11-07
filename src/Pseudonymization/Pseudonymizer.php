@@ -184,14 +184,19 @@ class Pseudonymizer
 	{
 		if ($this->resolver !== null) {
 			[$before, $after] = explode('%s', $this->subjectAnchor);
+			$anchor = preg_quote($before, '~') . '([^\s\]]+?)' . preg_quote($after, '~');
 			$text = (string) preg_replace_callback(
-				'~' . preg_quote($before, '~') . '([^\s\]]+?)' . preg_quote($after, '~') . '~u',
+				// Kotva, kterou AI sama obalila odkazem ([[CLIENT #3]](/clients/3) - adresu zná
+				// z výsledku nástroje), se nahradí celá: odkaz uvnitř odkazu markdown neumí
+				// a vypsal by se jako text. Adresa od AI se zahodí, platí ta z resolveru.
+				'~\[' . $anchor . '\]\((?:<[^>\n]*>|[^)\s]*)\)|' . $anchor . '~u',
 				function (array $m) use ($links): string {
-					$label = $this->resolver->label($m[1]);
+					$subject = ($m[1] ?? '') !== '' ? $m[1] : $m[2];
+					$label = $this->resolver->label($subject);
 					if ($label === null) {
 						return $m[0];
 					}
-					$url = $links && $this->resolver instanceof PiiSubjectLinker ? $this->resolver->url($m[1]) : null;
+					$url = $links && $this->resolver instanceof PiiSubjectLinker ? $this->resolver->url($subject) : null;
 
 					return $url !== null ? '[' . addcslashes($label, '[]') . '](<' . str_replace(['<', '>'], ['%3C', '%3E'], $url) . '>)' : $label;
 				},

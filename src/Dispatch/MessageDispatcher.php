@@ -21,6 +21,8 @@ interface MessageDispatcher
 	 * @param list<array{fileId: string, mediaType: string, filename: string}> $attachments
 	 *        files already uploaded to the Files API, to be replayed as
 	 *        {@see \ADT\AiChat\Attachment} objects in the worker
+	 * @param string|null $context goes to the AI after the message (e.g. the record open
+	 *        in the application) - pass it to processQueuedMessage() as is
 	 */
-	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = []): void;
+	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = [], ?string $context = null): void;
 }

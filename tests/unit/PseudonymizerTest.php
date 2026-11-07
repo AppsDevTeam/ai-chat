@@ -289,6 +289,18 @@ class PseudonymizerTest extends \Codeception\Test\Unit
 		);
 	}
 
+	public function testAnchorTheAiLinkedItselfBecomesOneLink(): void
+	{
+		$this->resolver->urls = [self::SUBJECT => '/patient/detail/7'];
+		$pseudonymizer = $this->pseudonymizer();
+
+		// AI zná adresu z výsledku nástroje a kotvu obalí odkazem sama - i s jinou adresou
+		foreach (['[[PACIENT #7]](</patient/7>)', '[[PACIENT #7]](/patient/7)', '[[PACIENT #7]](https://evil.example)'] as $text) {
+			$this->assertSame('Karta: [Žofie Zkušebníková](</patient/detail/7>) vím', $pseudonymizer->restore($this->conversation, "Karta: $text vím", links: true), $text);
+			$this->assertSame('Karta: Žofie Zkušebníková vím', $pseudonymizer->restore($this->conversation, "Karta: $text vím"), $text);
+		}
+	}
+
 	public function testSubjectAnchorMustContainTheId(): void
 	{
 		$this->expectException(\InvalidArgumentException::class);

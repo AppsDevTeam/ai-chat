@@ -122,6 +122,10 @@ class ChatEndpoint
 	 * $sender writes into the conversation of $owner (null = the owner itself); a new
 	 * conversation always belongs to $owner.
 	 *
+	 * $context goes to the AI after the message, never to the transcript - e.g. the
+	 * record the user has open (the widget posts the current `page`; the caller turns it
+	 * into a note, it must not trust it for access).
+	 *
 	 * @param list<AttachmentUpload> $uploads
 	 * @return array<string, mixed>
 	 */
@@ -133,13 +137,14 @@ class ChatEndpoint
 		?string $model = null,
 		?string $effort = null,
 		object|int|string|null $sender = null,
+		?string $context = null,
 	): array {
-		return $this->guard(function () use ($owner, $conversationId, $message, $uploads, $model, $effort, $sender): array {
+		return $this->guard(function () use ($owner, $conversationId, $message, $uploads, $model, $effort, $sender, $context): array {
 			$conversation = $conversationId !== null && $conversationId !== '' && $conversationId !== 0
 				? $this->requireConversation($conversationId, $owner)
 				: $this->chat->createConversation($owner);
 
-			$userMessage = $this->chat->enqueueMessage($conversation, $message, $uploads, $model, $effort, $sender);
+			$userMessage = $this->chat->enqueueMessage($conversation, $message, $uploads, $model, $effort, $sender, $context);
 
 			return [
 				'success' => true,

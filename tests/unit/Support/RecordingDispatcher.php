@@ -8,11 +8,11 @@ use ADT\AiChat\Dispatch\MessageDispatcher;
 
 class RecordingDispatcher implements MessageDispatcher
 {
-	/** @var list<array{conversationId: int|string, userMessage: string, attachments: array}> */
+	/** @var list<array{conversationId: int|string, userMessage: string, attachments: array, context: string|null}> */
 	public array $dispatched = [];
 
-	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = []): void
+	public function dispatch(int|string $conversationId, string $userMessage, array $attachments = [], ?string $context = null): void
 	{
-		$this->dispatched[] = compact('conversationId', 'userMessage', 'attachments');
+		$this->dispatched[] = compact('conversationId', 'userMessage', 'attachments', 'context');
 	}
 }

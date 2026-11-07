@@ -28,6 +28,23 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		$this->assertCount(1, $this->env->dispatcher->dispatched);
 	}
 
+	public function testContextGoesToTheAiButNotToTheTranscript(): void
+	{
+		$owner = $this->env->owner();
+		$sent = $this->env->endpoint->send($owner, null, 'Book him for Monday', context: '[Note: the user has the card of [CLIENT #3] open.]');
+		$conversationId = $sent['conversation']['id'];
+		$this->assertSame('[Note: the user has the card of [CLIENT #3] open.]', $this->env->dispatcher->dispatched[0]['context']);
+
+		$this->env->scriptReply('Done');
+		$this->env->chat->processQueuedMessage($conversationId, 'Book him for Monday', [], $this->env->dispatcher->dispatched[0]['context']);
+
+		$sentText = $this->env->client->sentEvents[0][0]['content'][0]['text'] ?? '';
+		$this->assertSame("Book him for Monday\n\n[Note: the user has the card of [CLIENT #3] open.]", $sentText);
+		$messages = $this->env->chat->getMessages($this->env->chat->findConversation($conversationId) ?? throw new \LogicException());
+		$this->assertSame('Book him for Monday', $messages[0]->getContent(), 'The transcript keeps the message alone');
+		$this->assertStringEndsWith('open.]', (string) $messages[1]->getSentContent(), 'Sent content shows what the AI got');
+	}
+
 	public function testSendAndPoll(): void
 	{
 		$owner = $this->env->owner();

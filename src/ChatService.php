@@ -491,6 +491,10 @@ class ChatService
 	 * $sender is who writes the message (stored with {@see ChatOptions::$senderField});
 	 * null = the owner of the conversation.
 	 *
+	 * $context (e.g. the record the user has open) goes to the AI after the message,
+	 * only in this turn: the transcript and the history of a new session keep the
+	 * message alone.
+	 *
 	 * @param list<AttachmentUpload> $uploads
 	 * @throws AiChatException with a message for the user (rate limit, attachments, API,
 	 *         a model or effort that is not offered)
@@ -502,6 +506,7 @@ class ChatService
 		?string $model = null,
 		?string $effort = null,
 		object|int|string|null $sender = null,
+		?string $context = null,
 	): MessageInterface {
 		$userMessage = trim($userMessage);
 		if ($userMessage === '' && !$uploads) {
@@ -545,6 +550,7 @@ class ChatService
 			$conversation->getId() ?? throw new \LogicException('The conversation has no id after flush.'),
 			$userMessage,
 			$attachments,
+			$context !== null && trim($context) !== '' ? trim($context) : null,
 		);
 
 		return $message;
@@ -560,7 +566,7 @@ class ChatService
 	 *
 	 * @param list<array{fileId: string, mediaType: string, filename?: string}> $attachments
 	 */
-	public function processQueuedMessage(int|string $conversationId, string $userMessage, array $attachments = []): void
+	public function processQueuedMessage(int|string $conversationId, string $userMessage, array $attachments = [], ?string $context = null): void
 	{
 		$conversation = $this->findConversation($conversationId);
 		if ($conversation === null) {
@@ -568,16 +574,16 @@ class ChatService
 		}
 
 		if ($this->userScope === null) {
-			$this->processTurn($conversation, $userMessage, $attachments);
+			$this->processTurn($conversation, $userMessage, $attachments, $context);
 
 			return;
 		}
 
 		$ran = false;
 		try {
-			($this->userScope)($this->getTurnAuthor($conversation), function () use ($conversation, $userMessage, $attachments, &$ran): void {
+			($this->userScope)($this->getTurnAuthor($conversation), function () use ($conversation, $userMessage, $attachments, $context, &$ran): void {
 				$ran = true;
-				$this->processTurn($conversation, $userMessage, $attachments);
+				$this->processTurn($conversation, $userMessage, $attachments, $context);
 			});
 		} catch (\Throwable $e) {
 			// A failing scope (e.g. the user cannot be signed in) must not send the job back;
@@ -614,12 +620,12 @@ class ChatService
 	/**
 	 * @param list<array{fileId: string, mediaType: string, filename?: string}> $attachments
 	 */
-	private function processTurn(ConversationInterface $conversation, string $userMessage, array $attachments): void
+	private function processTurn(ConversationInterface $conversation, string $userMessage, array $attachments, ?string $context): void
 	{
 		$conversationId = $conversation->getId();
 
 		try {
-			$this->runConversationTurn($conversation, $userMessage, $attachments);
+			$this->runConversationTurn($conversation, $userMessage, $attachments, $context);
 		} catch (\Throwable $e) {
 			if ($e instanceof TurnTimeoutException || $e instanceof PiiCheckUnavailableException) {
 				// An exhausted turn budget is a deliberate safety stop against a runaway
@@ -658,7 +664,7 @@ class ChatService
 	 * @throws AiChatException
 	 * @throws PiiCheckUnavailableException
 	 */
-	public function runConversationTurn(ConversationInterface $conversation, string $userMessage, array $attachments = []): MessageInterface
+	public function runConversationTurn(ConversationInterface $conversation, string $userMessage, array $attachments = [], ?string $context = null): MessageInterface
 	{
 		$monitor = new ConversationTurnMonitor($this->em, $conversation);
 		$pseudonymized = null;
@@ -673,10 +679,18 @@ class ChatService
 			$this->piiCheckListener?->checked($conversation, $pseudonymized);
 		}
 
+		// The context comes from the application (anchors, no plain personal data) - it
+		// goes after the pseudonymized text as it is
+		$forAi = $pseudonymized?->forAi ?? $userMessage;
+		$context = $context !== null && trim($context) !== '' ? trim($context) : null;
+		if ($context !== null) {
+			$forAi .= "\n\n" . $context;
+		}
+
 		$modelChoice = $this->getModelChoice($conversation);
 		$result = $this->getRunner()->run(
 			$conversation,
-			$pseudonymized?->forAi ?? $userMessage,
+			$forAi,
 			// Persisted as soon as it changes, so a crashed turn resumes against the
 			// right (new) session instead of the stuck old one.
 			fn(?string $sessionId) => $this->em->flush(),
@@ -731,7 +745,8 @@ class ChatService
 			$result->tokensOutput ?: null,
 			interrupted: $result->interrupted,
 		);
-		$reply->setSentContent($pseudonymized?->replaced);
+		// What the AI got instead of the message (pseudonymized text, the context) - null = the message as it is
+		$reply->setSentContent($context !== null ? ($pseudonymized?->replaced ?? $userMessage) . "\n\n" . $context : $pseudonymized?->replaced);
 
 		$conversation->setUpdated(new \DateTimeImmutable());
 		$this->em->flush();

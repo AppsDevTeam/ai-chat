@@ -181,7 +181,9 @@ interval for the first 15 s of a turn, default 250 ms; then 2 s, 5 s and 10 s),
 `fitViewport`, `params` (extra parameters sent with every request and export
 link, e.g. `{"userId": 5}` for an administrator viewing someone's conversations;
 `AiChat.get(root).setParams({...})` changes them and reloads the list). The root
-dispatches `ai-chat:conversation` and `ai-chat:deleted` events. No inline styles or scripts -
+dispatches `ai-chat:conversation`, `ai-chat:deleted`, `ai-chat:navigate` and `ai-chat:reply`
+(`{message, element}` - a fresh reply with its rendered element, e.g. to read it aloud)
+events. No inline styles or scripts -
 works under a strict CSP; colours are CSS variables (`--ai-chat-*`).
 
 ### 5. Provisioning the agent
@@ -410,6 +412,17 @@ a chat panel) calls `preventDefault()`. Clicks on links to your site in replies 
 on the button (`labels.open`, icon `open`) dispatch the same event with `auto:
 false`; unhandled, they open a new tab and an unhandled auto navigation does nothing.
 
+### Page context
+
+The widget posts the page the user is on (`page`: path and query) with every message.
+Turn it into a note for the AI and pass it as `ChatEndpoint::send(..., context: $note)`,
+e.g. `[Note: the user has the card of [CLIENT #12] open - "him" means this client.]` - the
+AI then knows which record "this client" is. The context goes to the AI after the
+(pseudonymized) message, only in that turn: the transcript, the title and the history of
+a new session keep the message alone; `sentContent` of the reply shows it. `page` comes
+from the browser - check access before you describe the record, and use subject anchors
+rather than names (the context is not pseudonymized).
+
 ## MCP server
 
 `Mcp\McpServer` publishes the data tools (`get_database_schema`, `execute_sql`) over
@@ -504,6 +517,20 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.6
+
+- `MessageDispatcher::dispatch()` has a fourth parameter `?string $context = null` - a
+  custom dispatcher has to add it and hand it over to `processQueuedMessage()`, which
+  takes it as the fourth argument too. `BackgroundQueueMessageDispatcher` puts `context`
+  into the job only when there is one, so a callback without the parameter keeps working
+  until the project passes a context.
+- New: `ChatEndpoint::send(..., context:)` and the `page` field the widget posts with every
+  message ([Page context](#page-context)).
+- New: the widget event `ai-chat:reply` `{message, element}` for a fresh reply.
+- `Pseudonymizer::restore(links: true)` replaces an anchor the AI linked itself
+  (`[[CLIENT #3]](/clients/3)`) as a whole - before, the nested link showed as raw markdown.
+  The URL of the AI is dropped, the resolver's one is used.
 
 ## Upgrading to 1.5
 
