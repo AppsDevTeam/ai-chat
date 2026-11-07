@@ -28,7 +28,7 @@
   "require-dev": {
     "codeception/codeception": "^5.0",
     "codeception/module-asserts": "^3.0",
-    "guzzlehttp/guzzle": "^7.5",
+    "guzzlehttp/guzzle": "^7.5 || ^8.0.1",
     "symfony/cache": "^6.4 || ^7.0"
   },
   "suggest": {

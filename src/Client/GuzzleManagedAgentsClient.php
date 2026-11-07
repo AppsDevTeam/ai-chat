@@ -8,7 +8,7 @@ use ADT\AiChat\Exception\ApiUnavailableException;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
-use GuzzleHttp\Exception\RequestException;
+use Psr\Http\Message\ResponseInterface;
 
 /**
  * Default transport over Guzzle (`composer require guzzlehttp/guzzle`).
@@ -205,8 +205,10 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 	 */
 	protected function describeError(GuzzleException $e): string
 	{
-		if ($e instanceof RequestException && $e->getResponse() !== null) {
-			return 'HTTP ' . $e->getResponse()->getStatusCode();
+		// Guzzle 7 keeps the response on RequestException, Guzzle 8 only on ResponseException
+		$response = method_exists($e, 'getResponse') ? $e->getResponse() : null;
+		if ($response instanceof ResponseInterface) {
+			return 'HTTP ' . $response->getStatusCode();
 		}
 
 		return 'connection failed';
