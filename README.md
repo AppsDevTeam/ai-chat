@@ -176,7 +176,8 @@ mountAll(document, { marked, DOMPurify, Chart });
 `conversationId` the first message starts a new conversation. Other options:
 `readOnly`, `canManage`, `urlParam` (see Shared conversations), `locale`, `accept`/`maxAttachments`/`maxAttachmentBytes` (take them
 from `AttachmentPolicy`), `modelSelection` (`ModelSelection::toClient()`), `labels`
-(all texts), `icons` (Font Awesome classes by default), `pollIntervalMs`,
+(all texts), `icons` (Font Awesome classes by default), `pollIntervalMs` (poll
+interval for the first 15 s of a turn, default 250 ms; then 2 s, 5 s and 10 s),
 `fitViewport`, `params` (extra parameters sent with every request and export
 link, e.g. `{"userId": 5}` for an administrator viewing someone's conversations;
 `AiChat.get(root).setParams({...})` changes them and reloads the list). The root
@@ -401,9 +402,10 @@ The button label is `labels.download` (the client-side CSV of a table keeps
 A tool that **opens a page** of your application (a record the user asked for)
 returns `{type: navigate, url, title?}` - `url` a path on your site (`/clients/12`;
 anything else never reaches the browser), `title` what the button says, e.g. the
-subject's anchor `[CLIENT #12]` (the AI sees the anchor, the user its label). On a
-fresh reply the widget dispatches a cancelable `ai-chat:navigate` `{url, title,
-auto: true}`; a page that can show the URL without leaving the chat (load it behind
+subject's anchor `[CLIENT #12]` (the AI sees the anchor, the user its label). As soon
+as the tool of the main agent ran (the poll response carries it in `turn.navigate`,
+the closing sentence of the agent comes later) the widget dispatches a cancelable
+`ai-chat:navigate` `{url, title, auto: true}`, once per page and turn; a page that can show the URL without leaving the chat (load it behind
 a chat panel) calls `preventDefault()`. Clicks on links to your site in replies and
 on the button (`labels.open`, icon `open`) dispatch the same event with `auto:
 false`; unhandled, they open a new tab and an unhandled auto navigation does nothing.
@@ -502,6 +504,15 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.5
+
+Nothing breaks. A page the agent opens (`{type: navigate}`) is opened while the turn
+still runs - from its progress (`turnProgress.navigate`, `turn.navigate` of the poll
+response), not after the reply. The widget polls every 250 ms for the first 15 s of
+a turn (`pollIntervalMs`, before 2 s), then 2 s up to a minute, 5 s up to three, then
+10 s. A project that set `pollIntervalMs` sets only the first phase now. A custom
+`TurnMonitor` gets `navigate` in the progress array.
 
 ## Upgrading to 1.4
 

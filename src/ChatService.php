@@ -759,9 +759,10 @@ class ChatService
 	/**
 	 * The state of the turn waiting for a reply, for the widget; null when none waits.
 	 * `activity` changes with every sign of life of the turn (the widget measures its
-	 * timeout from it), `progress` lists the subagents at work.
+	 * timeout from it), `progress` lists the subagents at work and the page the agent
+	 * already opened (`navigate`, its title restored for the user).
 	 *
-	 * @return array{activity: string, cancelled: bool, progress: array{tool_calls: int, threads: list<array<string, mixed>>}|null}|null
+	 * @return array{activity: string, cancelled: bool, progress: array{tool_calls: int, threads: list<array<string, mixed>>, navigate?: array{url: string, title: string}|null}|null}|null
 	 */
 	public function getTurnState(ConversationInterface $conversation): ?array
 	{
@@ -771,11 +772,17 @@ class ChatService
 		}
 
 		$activity = max($last['created'], $conversation->getTurnActivity() ?? $last['created']);
+		$progress = $conversation->getTurnProgress();
+
+		// Like the title in the stored reply: the AI sees the subject's anchor, the user its name
+		if ($this->pseudonymizer !== null && is_string($progress['navigate']['title'] ?? null)) {
+			$progress['navigate']['title'] = $this->pseudonymizer->restore($conversation, $progress['navigate']['title']);
+		}
 
 		return [
 			'activity' => $activity->format(DATE_ATOM),
 			'cancelled' => $conversation->getTurnCancelled() !== null,
-			'progress' => $conversation->getTurnProgress(),
+			'progress' => $progress,
 		];
 	}
 

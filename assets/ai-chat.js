@@ -44,6 +44,8 @@
  * reply each one is a collapsed card with its report and the charts and tables it
  * produced, rendered on expand. A turn only times out after `pollMaxMs` without any
  * sign of activity from the worker, so a long but busy turn keeps the spinner.
+ * A page the agent opens (`turn.navigate`) is opened as soon as the tool ran - the
+ * closing sentence of the reply comes later.
  *
  * Rating: with `urls.rate` the owner can rate a conversation that has a reply
  * (thumbs up / down + an optional comment); a read-only view shows the rating.
@@ -153,7 +155,9 @@ const DEFAULTS = {
 	accept: '',
 	maxAttachments: 4,
 	maxAttachmentBytes: 10 * 1024 * 1024,
-	pollIntervalMs: 2000,
+	// The first seconds of a turn: a reply that needs no tool, or a page to open, is
+	// usually there within them. Then the polling slows down ({@see pollDelay()}).
+	pollIntervalMs: 250,
 	// How long the spinner waits without any sign of activity from the worker (the
 	// worker beats at least every few minutes while the agent works); then it gives up.
 	pollMaxMs: 660000,
@@ -220,9 +224,11 @@ export class AiChat {
 		this.files = [];
 		this.charts = [];
 		this.pollTimer = null;
-		this.pollAttempts = 0;
+		this.pollStartedAt = 0;
 		this.pollActivity = null;
 		this.pollActiveAt = 0;
+		// The page of the running turn already opened from its progress (turn.navigate)
+		this.turnNavigated = null;
 		this.modelSelection = this.config.modelSelection?.models?.length ? this.config.modelSelection : null;
 		this.preferredModel = this.modelSelection?.defaultModel ?? null;
 		this.preferredEffort = this.modelSelection?.defaultEffort ?? null;
@@ -979,9 +985,10 @@ export class AiChat {
 
 		this.stopPolling();
 		this.setLoading(true, true);
-		this.pollAttempts = 0;
+		this.pollStartedAt = Date.now();
 		this.pollActivity = null;
 		this.pollActiveAt = Date.now();
+		this.turnNavigated = null;
 
 		const poll = async () => {
 			if (String(this.conversationId) !== String(conversationId)) {
@@ -1001,7 +1008,6 @@ export class AiChat {
 				this.scrollToBottom();
 				return;
 			}
-			this.pollAttempts++;
 
 			let data;
 			try {
@@ -1031,6 +1037,12 @@ export class AiChat {
 					this.pollActiveAt = Date.now();
 				}
 				this.renderTurn(data.turn);
+
+				const navigate = data.turn.navigate;
+				if (navigate?.url && navigate.url !== this.turnNavigated) {
+					this.turnNavigated = navigate.url;
+					this.navigate(navigate.url, navigate.title || '', true);
+				}
 			}
 
 			// Messages of other senders may arrive meanwhile - show them, and stop only
@@ -1067,13 +1079,18 @@ export class AiChat {
 		this.pollTimer = setTimeout(poll, this.pollDelay());
 	}
 
-	// A reply typically takes minutes - 2 s while warming up, then 5 s, then 10 s.
+	// A simple reply takes seconds, one with queries up to minutes - `pollIntervalMs`
+	// for the first 15 s, then 2 s up to a minute, 5 s up to three, then 10 s.
 	pollDelay() {
-		if (this.pollAttempts < 5) {
+		const elapsed = Date.now() - this.pollStartedAt;
+		if (elapsed < 15000) {
 			return this.config.pollIntervalMs;
 		}
+		if (elapsed < 60000) {
+			return 2000;
+		}
 
-		return this.pollAttempts < 15 ? 5000 : 10000;
+		return elapsed < 180000 ? 5000 : 10000;
 	}
 
 	stopPolling() {
@@ -1310,7 +1327,8 @@ export class AiChat {
 			.map((entry) => entry.tool_result || {})
 			.filter((result) => result.type === 'navigate' && result.url);
 		const last = results[results.length - 1];
-		if (last) {
+		// Already opened from the progress of the turn - opening it again would reload it
+		if (last && last.url !== this.turnNavigated) {
 			this.navigate(last.url, last.title || '', true);
 		}
 	}

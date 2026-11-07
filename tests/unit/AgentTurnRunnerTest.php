@@ -184,6 +184,86 @@ class AgentTurnRunnerTest extends \Codeception\Test\Unit
 		$this->assertSame('execute_sql', $result->toolData[0]['tool_name']);
 	}
 
+	public function testPageOpenedByTheMainThreadIsInTheProgressBeforeTheToolResult(): void
+	{
+		$this->client->frames = [
+			[
+				['id' => 't1', 'type' => 'agent.custom_tool_use', 'name' => 'open_card', 'input' => ['id' => 12]],
+				['id' => 's1', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'requires_action']],
+			],
+			[
+				['id' => 'm1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Opened']]],
+				['id' => 's2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+			],
+		];
+		$toolExecutor = new class implements ToolExecutor {
+			public function handleToolCall(string $toolName, array $input): array
+			{
+				return ['type' => 'navigate', 'url' => '/clients/12', 'title' => '[CLIENT #12]', 'opened' => true];
+			}
+
+			public function getCustomToolDefinitions(): array
+			{
+				return [];
+			}
+		};
+		$runner = new AgentTurnRunner(
+			$this->client,
+			$toolExecutor,
+			fn(): AgentResolution => new AgentResolution('agent_1', 'env_1'),
+			new AiChatOptions(0, 1.0, 5),
+		);
+		$progress = [];
+		$monitor = $this->monitor(progress: $progress);
+		$sentBeforeProgress = null;
+		$monitor->onFirstProgress = function () use (&$sentBeforeProgress): void {
+			$sentBeforeProgress = count($this->client->sentEvents);
+		};
+
+		$runner->run($this->conversation('sesn_existing'), 'Open the card', fn() => null, monitor: $monitor);
+
+		$this->assertSame(['url' => '/clients/12', 'title' => '[CLIENT #12]'], $progress[0]['navigate']);
+		// Only the user message went out - the tool result follows the progress.
+		$this->assertSame(1, $sentBeforeProgress);
+	}
+
+	public function testPageOpenedByASubagentIsNotOpenedForTheUser(): void
+	{
+		$this->client->frames = [
+			[
+				['id' => 'c1', 'type' => 'session.thread_created', 'session_thread_id' => 'th_a', 'agent_name' => 'sub'],
+				['id' => 'c2', 'type' => 'agent.thread_message_sent', 'to_session_thread_id' => 'th_a', 'to_agent_name' => 'sub', 'content' => 'Open it'],
+				['id' => 't1', 'type' => 'agent.custom_tool_use', 'session_thread_id' => 'th_a', 'name' => 'open_card', 'input' => []],
+			],
+			[
+				['id' => 'c3', 'type' => 'session.thread_status_idle', 'session_thread_id' => 'th_a'],
+				['id' => 's1', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+			],
+		];
+		$toolExecutor = new class implements ToolExecutor {
+			public function handleToolCall(string $toolName, array $input): array
+			{
+				return ['type' => 'navigate', 'url' => '/clients/12'];
+			}
+
+			public function getCustomToolDefinitions(): array
+			{
+				return [];
+			}
+		};
+		$runner = new AgentTurnRunner(
+			$this->client,
+			$toolExecutor,
+			fn(): AgentResolution => new AgentResolution('agent_1', 'env_1'),
+			new AiChatOptions(0, 1.0, 5),
+		);
+		$progress = [];
+
+		$runner->run($this->conversation('sesn_existing'), 'x', fn() => null, monitor: $this->monitor(progress: $progress));
+
+		$this->assertNull($progress[array_key_last($progress)]['navigate']);
+	}
+
 	public function testFailedToolIsReportedAsErrorToTheAgent(): void
 	{
 		$this->client->frames = [

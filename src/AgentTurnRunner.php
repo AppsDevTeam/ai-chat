@@ -201,6 +201,8 @@ class AgentTurnRunner
 		$toolCalls = [];
 		/** @var array<string, array{id: string, name: string, status: string, task: string, report: string, tool_calls: int, delegated: bool, entry: int|null}> $threads */
 		$threads = [];
+		/** @var array{url: string, title: string}|null $navigate the last page the main thread opened */
+		$navigate = null;
 		$idle = false;
 		$terminated = false;
 		$started = $lastActivity = microtime(true);
@@ -266,6 +268,10 @@ class AgentTurnRunner
 
 						if ($child !== null) {
 							$threads[$child]['tool_calls']++;
+						} elseif (($toolResult['type'] ?? null) === 'navigate' && is_string($toolResult['url'] ?? null)) {
+							// The widget opens the page from the progress right away, without
+							// waiting for the closing sentence of the agent (a whole model request).
+							$navigate = ['url' => $toolResult['url'], 'title' => (string) ($toolResult['title'] ?? '')];
 						}
 
 						$toolResults[] = [
@@ -353,6 +359,12 @@ class AgentTurnRunner
 				}
 			}
 
+			// The progress before the tool results: a page to open reaches the widget
+			// one request to the API sooner.
+			if ($events) {
+				$monitor?->onProgress(self::progress($threads, $toolCalls, $navigate));
+			}
+
 			if ($toolResults) {
 				$this->client->sendSessionEvents($sessionId, $toolResults);
 			}
@@ -360,7 +372,6 @@ class AgentTurnRunner
 			$now = microtime(true);
 			if ($events) {
 				$lastActivity = $now;
-				$monitor?->onProgress(self::progress($threads, $toolCalls));
 			}
 
 			// A subagent still at work keeps the turn open even when the session
@@ -398,7 +409,7 @@ class AgentTurnRunner
 					);
 				}
 				$lastActivity = $now;
-				$monitor?->onProgress(self::progress($threads, $toolCalls));
+				$monitor?->onProgress(self::progress($threads, $toolCalls, $navigate));
 			}
 		}
 
@@ -496,9 +507,10 @@ class AgentTurnRunner
 	/**
 	 * @param array<string, array{id: string, name: string, status: string, task: string, report: string, tool_calls: int, delegated: bool, entry: int|null}> $threads
 	 * @param array<string, int> $toolCalls
-	 * @return array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>}
+	 * @param array{url: string, title: string}|null $navigate
+	 * @return array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>, navigate: array{url: string, title: string}|null}
 	 */
-	private static function progress(array $threads, array $toolCalls): array
+	private static function progress(array $threads, array $toolCalls, ?array $navigate): array
 	{
 		$delegated = array_filter($threads, static fn(array $t): bool => $t['delegated']);
 
@@ -508,6 +520,7 @@ class AgentTurnRunner
 				static fn(array $t): array => ['id' => $t['id'], 'name' => $t['name'], 'status' => $t['status'], 'task' => $t['task'], 'tool_calls' => $t['tool_calls']],
 				$delegated,
 			)),
+			'navigate' => $navigate,
 		];
 	}
 

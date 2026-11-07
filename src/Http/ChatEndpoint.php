@@ -327,6 +327,8 @@ class ChatEndpoint
 	/**
 	 * The turn state for the widget - subagents with their name, status and number
 	 * of tool calls; their tasks stay on the server (they may quote table names).
+	 * `navigate` is the page the agent already opened - the widget opens it before
+	 * the reply arrives; a URL off this site is dropped like in {@see clientToolData()}.
 	 *
 	 * @param array{activity: string, cancelled: bool, progress: array<string, mixed>|null}|null $state
 	 * @return array<string, mixed>|null
@@ -336,6 +338,7 @@ class ChatEndpoint
 		if ($state === null) {
 			return null;
 		}
+		$navigate = $state['progress']['navigate'] ?? null;
 
 		return [
 			'activity' => $state['activity'],
@@ -347,6 +350,10 @@ class ChatEndpoint
 				'status' => (string) ($thread['status'] ?? ''),
 				'toolCalls' => (int) ($thread['tool_calls'] ?? 0),
 			], $state['progress']['threads'] ?? []),
+			'navigate' => self::isLocalUrl($navigate['url'] ?? null) ? [
+				'url' => (string) $navigate['url'],
+				'title' => (string) ($navigate['title'] ?? ''),
+			] : null,
 		];
 	}
 

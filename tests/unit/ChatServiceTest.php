@@ -290,6 +290,18 @@ class ChatServiceTest extends \Codeception\Test\Unit
 		$this->assertSame(['EMAIL' => 1, 'PHONE' => 1, 'SUBJECT' => 1], $result->findings);
 	}
 
+	public function testPageOpenedDuringTheTurnHasTheNameOfTheSubject(): void
+	{
+		$env = $this->pseudonymizingEnvironment();
+		$conversation = $env->chat->createConversation($env->owner());
+		$env->chat->enqueueMessage($conversation, 'Open the card of jane@example.test');
+
+		$conversation->setTurnProgress(['tool_calls' => 1, 'threads' => [], 'navigate' => ['url' => '/clients/5', 'title' => '[SUBJECT #5]']]);
+		$env->em->flush();
+
+		$this->assertSame(['url' => '/clients/5', 'title' => 'Jane Doe'], $env->chat->getTurnState($conversation)['progress']['navigate']);
+	}
+
 	public function testNothingReplacedLeavesNoSentContent(): void
 	{
 		$env = $this->pseudonymizingEnvironment();

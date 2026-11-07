@@ -114,6 +114,23 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		], $this->env->endpoint->clientToolData($toolData, 5));
 	}
 
+	public function testTurnCarriesThePageAlreadyOpenedOnlyOnThisSite(): void
+	{
+		$state = ['activity' => '2026-01-01T00:00:00+00:00', 'cancelled' => false, 'progress' => [
+			'tool_calls' => 1,
+			'threads' => [],
+			'navigate' => ['url' => '/patient/detail/12', 'title' => 'Jan'],
+		]];
+		$this->assertSame(['url' => '/patient/detail/12', 'title' => 'Jan'], $this->env->endpoint->clientTurn($state)['navigate']);
+
+		$state['progress']['navigate']['url'] = '//evil.example/x';
+		$this->assertNull($this->env->endpoint->clientTurn($state)['navigate']);
+
+		// Progress stored before the page was part of it
+		unset($state['progress']['navigate']);
+		$this->assertNull($this->env->endpoint->clientTurn($state)['navigate']);
+	}
+
 	public function testStoredStringifiedTableRowsAreDecoded(): void
 	{
 		$toolData = [[

@@ -21,8 +21,9 @@ interface TurnMonitor
 	/**
 	 * Called after every poll that brought new events - a heartbeat of the turn.
 	 *
-	 * @param array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>} $progress
-	 *        tool calls of the main thread and the subagent threads started so far
+	 * @param array{tool_calls: int, threads: list<array{id: string, name: string, status: string, task: string, tool_calls: int}>, navigate: array{url: string, title: string}|null} $progress
+	 *        tool calls of the main thread, the subagent threads started so far and the
+	 *        last page the main thread opened (tool result `{type: navigate}`)
 	 */
 	public function onProgress(array $progress): void;
 }
