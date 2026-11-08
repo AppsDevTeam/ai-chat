@@ -311,8 +311,9 @@ selects in the widget, so the router (or the default) decides alone.
 dictated command typed into whatever conversation was open last) may start a new one
 instead. Pass a `ConversationRouter` to `ChatService` (`conversationRouter:`, autowired
 in DI) and call `ChatEndpoint::send(..., routeConversation: true)` for such messages; the
-router gets the text and the time of the last message and says whether it continues the
-conversation. A new conversation is cheaper and safer: every turn sends the whole
+router gets the text, the time of the last message and the last AI reply (when the reply
+is the last message - an answer to its question belongs to the conversation) and says
+whether it continues the conversation. A new conversation is cheaper and safer: every turn sends the whole
 conversation again and the prompt cache lasts only minutes, so continue only a clear
 follow-up shortly after the last message. The widget learns the conversation from the
 response and shows the new one. The page marks such a message in the `ai-chat:before-send`
@@ -537,6 +538,12 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.9
+
+`ConversationRouter::continues()` gets a third argument `?string $lastReply` - the last
+AI reply, so an answer to its question stays in the conversation. Add it to your router
+(1.8 with the router was out for a few hours only).
 
 ## Upgrading to 1.8
 

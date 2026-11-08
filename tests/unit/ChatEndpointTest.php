@@ -31,9 +31,9 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 	public function testRoutedMessageStartsANewConversationWhenTheRouterSaysSo(): void
 	{
 		$router = new class implements \ADT\AiChat\ConversationRouter {
-			public function continues(string $userMessage, \DateTimeImmutable $lastMessageAt): bool
+			public function continues(string $userMessage, \DateTimeImmutable $lastMessageAt, ?string $lastReply): bool
 			{
-				return str_starts_with($userMessage, 'And ');
+				return str_starts_with($userMessage, 'And ') || str_ends_with((string) $lastReply, '?');
 			}
 		};
 		$env = new ChatTestEnvironment(conversationRouter: $router);
@@ -52,9 +52,13 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		$this->assertNotSame($conversationId, $other['conversation']['id']);
 		$this->assertSame('Create a task for tomorrow', $other['conversation']['title']);
 
-		// Without the flag the message stays where the user put it
-		$env->scriptReply('Done');
+		// An answer to the AI's question stays in the conversation
+		$env->scriptReply('Which patient?');
 		$env->chat->processQueuedMessage($other['conversation']['id'], 'Create a task for tomorrow');
+		$answer = $env->endpoint->send($owner, $other['conversation']['id'], 'Paul Smith', routeConversation: true);
+		$this->assertSame($other['conversation']['id'], $answer['conversation']['id']);
+
+		// Without the flag the message stays where the user put it
 		$typed = $env->endpoint->send($owner, $conversationId, 'Create another task');
 		$this->assertSame($conversationId, $typed['conversation']['id']);
 	}

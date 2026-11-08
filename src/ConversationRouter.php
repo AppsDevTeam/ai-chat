@@ -22,7 +22,9 @@ interface ConversationRouter
 {
 	/**
 	 * @param \DateTimeImmutable $lastMessageAt the last message of the conversation (a user message or a reply)
+	 * @param string|null $lastReply the text of the AI reply when it is the last message (not an error), e.g. to
+	 *        see that the AI asked something and the message is the answer ("Which patient?" - "Pavel Novak")
 	 * @return bool true = the message goes to the open conversation, false = a new conversation
 	 */
-	public function continues(string $userMessage, \DateTimeImmutable $lastMessageAt): bool;
+	public function continues(string $userMessage, \DateTimeImmutable $lastMessageAt, ?string $lastReply): bool;
 }

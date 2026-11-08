@@ -130,12 +130,26 @@ class ChatService
 	 */
 	public function continuesConversation(ConversationInterface $conversation, string $userMessage): bool
 	{
-		if ($this->conversationRouter === null) {
+		if ($this->conversationRouter === null || $conversation->getId() === null) {
 			return true;
 		}
-		$last = $this->findLastMessage($conversation);
+		/** @var array{author: string, created: \DateTimeImmutable, content: string, error: bool}|null $last */
+		$last = $this->em->createQueryBuilder()
+			->select('m.author, m.created, m.content, m.error')
+			->from($this->options->messageClass, 'm')
+			->where('m.' . $this->options->conversationField . ' = :conversation')
+			->setParameter('conversation', $conversation)
+			->orderBy('m.' . $this->messageIdField(), 'DESC')
+			->setMaxResults(1)
+			->getQuery()
+			->getOneOrNullResult();
+		if ($last === null) {
+			return true;
+		}
+		// The AI's reply (not an error) - the router sees whether it asked something
+		$lastReply = $last['author'] === MessageInterface::AUTHOR_AI && !$last['error'] ? $last['content'] : null;
 
-		return $last === null || $this->conversationRouter->continues(trim($userMessage), $last['created']);
+		return $this->conversationRouter->continues(trim($userMessage), $last['created'], $lastReply);
 	}
 
 	/**
