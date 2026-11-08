@@ -126,6 +126,11 @@ class ChatEndpoint
 	 * record the user has open (the widget posts the current `page`; the caller turns it
 	 * into a note, it must not trust it for access).
 	 *
+	 * $routeConversation: the user did not pick the conversation himself (e.g. a dictated
+	 * command typed into whatever conversation was open) - the {@see \ADT\AiChat\ConversationRouter}
+	 * decides whether the message continues it or starts a new one. The response carries
+	 * the conversation the message went to. Only for the owner's own messages.
+	 *
 	 * @param list<AttachmentUpload> $uploads
 	 * @return array<string, mixed>
 	 */
@@ -138,11 +143,18 @@ class ChatEndpoint
 		?string $effort = null,
 		object|int|string|null $sender = null,
 		?string $context = null,
+		bool $routeConversation = false,
 	): array {
-		return $this->guard(function () use ($owner, $conversationId, $message, $uploads, $model, $effort, $sender, $context): array {
+		return $this->guard(function () use ($owner, $conversationId, $message, $uploads, $model, $effort, $sender, $context, $routeConversation): array {
 			$conversation = $conversationId !== null && $conversationId !== '' && $conversationId !== 0
 				? $this->requireConversation($conversationId, $owner)
-				: $this->chat->createConversation($owner);
+				: null;
+			// Someone else's conversation (an administrator writing into it) is never left
+			if ($conversation !== null && $routeConversation && ($sender === null || $this->chat->isSameUser($sender, $owner))
+				&& !$this->chat->continuesConversation($conversation, $message)) {
+				$conversation = null;
+			}
+			$conversation ??= $this->chat->createConversation($owner);
 
 			$userMessage = $this->chat->enqueueMessage($conversation, $message, $uploads, $model, $effort, $sender, $context);
 

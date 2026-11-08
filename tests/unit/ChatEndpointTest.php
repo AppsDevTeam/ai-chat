@@ -28,6 +28,37 @@ class ChatEndpointTest extends \Codeception\Test\Unit
 		$this->assertCount(1, $this->env->dispatcher->dispatched);
 	}
 
+	public function testRoutedMessageStartsANewConversationWhenTheRouterSaysSo(): void
+	{
+		$router = new class implements \ADT\AiChat\ConversationRouter {
+			public function continues(string $userMessage, \DateTimeImmutable $lastMessageAt): bool
+			{
+				return str_starts_with($userMessage, 'And ');
+			}
+		};
+		$env = new ChatTestEnvironment(conversationRouter: $router);
+		$owner = $env->owner();
+		$first = $env->endpoint->send($owner, null, 'Orders in September?');
+		$conversationId = $first['conversation']['id'];
+		$env->scriptReply('412');
+		$env->chat->processQueuedMessage($conversationId, 'Orders in September?');
+
+		$followUp = $env->endpoint->send($owner, $conversationId, 'And in October?', routeConversation: true);
+		$this->assertSame($conversationId, $followUp['conversation']['id']);
+		$env->scriptReply('398');
+		$env->chat->processQueuedMessage($conversationId, 'And in October?');
+
+		$other = $env->endpoint->send($owner, $conversationId, 'Create a task for tomorrow', routeConversation: true);
+		$this->assertNotSame($conversationId, $other['conversation']['id']);
+		$this->assertSame('Create a task for tomorrow', $other['conversation']['title']);
+
+		// Without the flag the message stays where the user put it
+		$env->scriptReply('Done');
+		$env->chat->processQueuedMessage($other['conversation']['id'], 'Create a task for tomorrow');
+		$typed = $env->endpoint->send($owner, $conversationId, 'Create another task');
+		$this->assertSame($conversationId, $typed['conversation']['id']);
+	}
+
 	public function testContextGoesToTheAiButNotToTheTranscript(): void
 	{
 		$owner = $this->env->owner();

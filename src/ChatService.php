@@ -66,6 +66,7 @@ class ChatService
 		private readonly ?Pseudonymizer $pseudonymizer = null,
 		private readonly ?PiiCheckListener $piiCheckListener = null,
 		private readonly ?ModelRouter $modelRouter = null,
+		private readonly ?ConversationRouter $conversationRouter = null,
 	) {
 	}
 
@@ -121,6 +122,20 @@ class ChatService
 		$this->em->flush();
 
 		return $conversation;
+	}
+
+	/**
+	 * Does the message continue the conversation? Asks the {@see ConversationRouter};
+	 * without one, or in a conversation with no message yet, always.
+	 */
+	public function continuesConversation(ConversationInterface $conversation, string $userMessage): bool
+	{
+		if ($this->conversationRouter === null) {
+			return true;
+		}
+		$last = $this->findLastMessage($conversation);
+
+		return $last === null || $this->conversationRouter->continues(trim($userMessage), $last['created']);
 	}
 
 	/**

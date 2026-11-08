@@ -307,6 +307,18 @@ new session). It runs in the web request, keep it fast (rules, a local classifie
 unknown id or null means the default. `ModelSelection(selectable: false)` hides the
 selects in the widget, so the router (or the default) decides alone.
 
+**Conversation router.** A message the user did not aim at a conversation himself (a
+dictated command typed into whatever conversation was open last) may start a new one
+instead. Pass a `ConversationRouter` to `ChatService` (`conversationRouter:`, autowired
+in DI) and call `ChatEndpoint::send(..., routeConversation: true)` for such messages; the
+router gets the text and the time of the last message and says whether it continues the
+conversation. A new conversation is cheaper and safer: every turn sends the whole
+conversation again and the prompt cache lasts only minutes, so continue only a clear
+follow-up shortly after the last message. The widget learns the conversation from the
+response and shows the new one. The page marks such a message in the `ai-chat:before-send`
+event (`e.detail.body.append('routeConversation', '1')`), the server passes the field on.
+Without a router the flag does nothing; someone else's conversation is never left.
+
 ### Rating
 
 With `urls.rate` in the widget config the owner can rate a conversation that has a
@@ -525,6 +537,13 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.8
+
+Nothing breaks. New: `ConversationRouter` (optional last argument `conversationRouter`
+of `ChatService`), `ChatEndpoint::send(..., routeConversation:)`,
+`ChatService::continuesConversation()` and the widget event `ai-chat:before-send`
+([Model selection](#model-selection)).
 
 ## Upgrading to 1.7
 

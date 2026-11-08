@@ -76,6 +76,10 @@
  *   ai-chat:reply         {message, element}  a fresh reply arrived (not a loaded
  *                         conversation) - element is its rendered message, e.g. for
  *                         reading it aloud
+ *   ai-chat:before-send   {body, text}  a message is about to be sent - body is its FormData,
+ *                         the listener may append parameters for the server (e.g.
+ *                         `routeConversation`: the server may move the message to a new
+ *                         conversation, the widget then shows that one)
  */
 
 const DEFAULT_LABELS = {
@@ -899,11 +903,12 @@ export class AiChat {
 		this.renderFiles();
 
 		this.showWelcome(false);
-		const pending = this.appendMessage({
+		const userMessage = {
 			author: 'user',
 			content: text,
 			attachments: files.map((file) => ({ filename: file.name, mediaType: file.type, size: file.size })),
-		});
+		};
+		const pending = this.appendMessage(userMessage);
 		this.setLoading(true);
 		this.scrollToBottom();
 
@@ -914,6 +919,8 @@ export class AiChat {
 		// into a context note for the AI ({@see ChatEndpoint::send()} $context)
 		body.append('page', window.location.pathname + window.location.search);
 		files.forEach((file) => body.append('attachments[]', file, file.name));
+		// The page may add parameters to this one message (e.g. routeConversation for a dictated command)
+		this.emit('ai-chat:before-send', { body, text });
 
 		if (this.modelOptions) {
 			body.append('model', this.modelSelect.value);
@@ -942,7 +949,14 @@ export class AiChat {
 			return;
 		}
 
-		const created = String(this.conversationId) !== String(data.conversation.id);
+		const previousId = this.conversationId;
+		const created = String(previousId) !== String(data.conversation.id);
+		if (created && previousId) {
+			// The server started a new conversation instead of the open one ({@see ChatEndpoint::send()}
+			// $routeConversation) - the old one leaves the view, the message moves along
+			this.clearMessages();
+			this.appendMessage(userMessage);
+		}
 		this.conversationId = data.conversation.id;
 		this.writeUrlConversation(this.conversationId);
 		this.conversation = data.conversation;
