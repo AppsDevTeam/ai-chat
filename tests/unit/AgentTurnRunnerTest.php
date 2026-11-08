@@ -8,6 +8,7 @@ use ADT\AiChat\AiChatOptions;
 use ADT\AiChat\Exception\TurnTimeoutException;
 use ADT\AiChat\Tests\Support\FakeConversation;
 use ADT\AiChat\Tests\Support\FakeManagedAgentsClient;
+use ADT\AiChat\Tests\Support\FakeStreamingClient;
 use ADT\AiChat\ToolExecutor;
 use ADT\AiChat\TurnMonitor;
 
@@ -130,6 +131,61 @@ class AgentTurnRunnerTest extends \Codeception\Test\Unit
 		$this->assertSame(['sesn_1'], $persisted);
 		// The user message was delivered.
 		$this->assertSame('user.message', $this->client->sentEvents[0][0]['type']);
+	}
+
+	/** @return list<list<array<string, mixed>>> a tool call, then the reply */
+	private static function toolTurnFrames(): array
+	{
+		return [
+			[
+				['id' => 't1', 'type' => 'agent.custom_tool_use', 'name' => 'execute_sql', 'input' => ['sql' => 'SELECT 1']],
+				['id' => 's1', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'requires_action']],
+			],
+			[
+				['id' => 'm1', 'type' => 'agent.message', 'content' => [['type' => 'text', 'text' => 'Done']]],
+				['id' => 's2', 'type' => 'session.status_idle', 'stop_reason' => ['type' => 'end_turn']],
+			],
+		];
+	}
+
+	public function testEventsComeFromTheStreamWithoutPolling(): void
+	{
+		$this->client = new FakeStreamingClient();
+		$this->client->frames = self::toolTurnFrames();
+
+		$result = $this->runner()->run($this->conversation('sesn_existing'), 'Count clients', fn() => null);
+
+		$this->assertSame('Done', $result->text);
+		$this->assertSame([['execute_sql', ['sql' => 'SELECT 1']]], $this->toolCalls);
+		$this->assertSame(1, $this->client->streamsOpened);
+		// The event list was read only for the snapshot before the message
+		$this->assertSame(1, $this->client->listCalls);
+	}
+
+	public function testABrokenStreamFallsBackToPollingWithoutLosingEvents(): void
+	{
+		$this->client = new FakeStreamingClient();
+		$this->client->breakOnRead = 2;
+		$this->client->frames = self::toolTurnFrames();
+
+		$result = $this->runner()->run($this->conversation('sesn_existing'), 'Count clients', fn() => null);
+
+		$this->assertSame('Done', $result->text);
+		// The tool call from the stream is not executed again from the event list
+		$this->assertCount(1, $this->toolCalls);
+	}
+
+	public function testAStreamThatDoesNotOpenMeansPolling(): void
+	{
+		$this->client = new FakeStreamingClient();
+		$this->client->failOpen = true;
+		$this->client->frames = self::toolTurnFrames();
+
+		$result = $this->runner()->run($this->conversation('sesn_existing'), 'Count clients', fn() => null);
+
+		$this->assertSame('Done', $result->text);
+		$this->assertSame(0, $this->client->streamsOpened);
+		$this->assertGreaterThan(1, $this->client->listCalls);
 	}
 
 	public function testAttachmentsBecomeContentBlocksBeforeTheText(): void

@@ -15,8 +15,10 @@ namespace ADT\AiChat;
 class AiChatOptions
 {
 	/**
-	 * @param int $pollIntervalMicroseconds pause between event polls; the worker
-	 *                                      polls instead of holding an SSE stream
+	 * @param int $pollIntervalMicroseconds pause between event polls - without the
+	 *                                      event stream ({@see Client\SessionEventStreamer}),
+	 *                                      with it the longest wait for the next event
+	 *                                      before the loop checks a cancelled turn
 	 * @param float $idleTimeoutSeconds without a new event for this long the session
 	 *                                  status is checked - a running session (a long
 	 *                                  model request) keeps the turn alive, anything

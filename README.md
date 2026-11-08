@@ -67,6 +67,15 @@ drop the agent mapping (the next session provisions a new agent, step 5) or call
 `ensureProvisioned()` right away to validate the key - and sessions started under
 the old key cannot continue.
 
+**Event stream.** The worker gets the events of a turn from the live session stream
+(`GET /sessions/{id}/events/stream`, server-sent events) the moment the agent emits
+them - a tool call, the reply, the end of the turn - instead of polling the event list
+every `pollIntervalMicroseconds` (500 ms) on every step. It is an optional capability
+of the client, `Client\SessionEventStreamer`; `GuzzleManagedAgentsClient` has it (over
+a plain PHP stream, needs `allow_url_fopen`). A client without it, a stream that does
+not open or breaks, or a quiet stream (a buffering proxy, checked every 5 s) falls back
+to the event list - no event is lost or handled twice, the runner remembers what it saw.
+
 ### 2. The entities
 
 Conversation, message and agent mapping are your Doctrine entities; the traits
@@ -538,6 +547,13 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.10
+
+Nothing breaks. The worker reads the live event stream of the session instead of
+polling ([Event stream](#1-the-transport)) when the client implements the new
+`Client\SessionEventStreamer` - `GuzzleManagedAgentsClient` does. A custom
+`ManagedAgentsClient` keeps polling until it implements it.
 
 ## Upgrading to 1.9
 

@@ -167,6 +167,21 @@ class FakeManagedAgentsClient implements ManagedAgentsClient
 		];
 	}
 
+	/**
+	 * Releases the next frame the way the event stream would deliver it (for
+	 * {@see FakeStreamingClient}); the event list sees it too.
+	 *
+	 * @return list<array<string, mixed>> the events of the frame, [] when none is left or the turn did not start
+	 */
+	public function releaseFrame(): array
+	{
+		if (!$this->turnStarted || $this->released >= count($this->frames)) {
+			return [];
+		}
+
+		return $this->frames[$this->released++];
+	}
+
 	public function listSessionEvents(string $sessionId, int $limit = 1000, ?string $page = null, ?string $order = null): array
 	{
 		$this->listCalls++;

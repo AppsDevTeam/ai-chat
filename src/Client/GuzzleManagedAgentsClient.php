@@ -20,8 +20,13 @@ use Psr\Http\Message\ResponseInterface;
  *
  * Extend it for request logging, metrics or retries: {@see request()} and
  * {@see createHttpClient()} are the hooks.
+ *
+ * The event stream of a session ({@see openSessionEventStream()}) goes around Guzzle,
+ * over a plain PHP stream: reading a line with a timeout (to let the worker check a
+ * cancelled turn) works the same everywhere that way, without depending on how the
+ * Guzzle version and handler stream a response body. Needs `allow_url_fopen`.
  */
-class GuzzleManagedAgentsClient implements ManagedAgentsClient
+class GuzzleManagedAgentsClient implements ManagedAgentsClient, SessionEventStreamer
 {
 	public const MANAGED_AGENTS_BETA = 'managed-agents-2026-04-01';
 	public const FILES_API_BETA = 'files-api-2025-04-14';
@@ -122,6 +127,41 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient
 		}
 
 		return $this->request('GET', 'sessions/' . rawurlencode($sessionId) . '/events', null, $query);
+	}
+
+	public function openSessionEventStream(string $sessionId): SessionEventStream
+	{
+		$url = rtrim($this->baseUrl, '/') . '/sessions/' . rawurlencode($sessionId) . '/events/stream';
+		$context = stream_context_create([
+			'http' => [
+				'method' => 'GET',
+				'header' => implode("\r\n", [
+					'x-api-key: ' . $this->getApiKey(),
+					'anthropic-version: ' . $this->anthropicVersion,
+					'anthropic-beta: ' . self::MANAGED_AGENTS_BETA,
+					'Accept: text/event-stream',
+				]),
+				// 1.1 - the wrapper then decodes the chunked body itself
+				'protocol_version' => 1.1,
+				// Connecting and waiting for the response headers; reads set their own timeout
+				'timeout' => $this->connectTimeout,
+				// The status is checked below instead of a warning from fopen()
+				'ignore_errors' => true,
+			],
+		]);
+
+		$handle = @fopen($url, 'rb', false, $context);
+		if ($handle === false) {
+			throw ApiUnavailableException::fromDetail('connection failed');
+		}
+
+		$statusLine = (string) (stream_get_meta_data($handle)['wrapper_data'][0] ?? '');
+		if (!preg_match('~^HTTP/\S+\s+(\d{3})~', $statusLine, $m) || $m[1] !== '200') {
+			fclose($handle);
+			throw ApiUnavailableException::fromDetail(isset($m[1]) ? 'HTTP ' . $m[1] : 'invalid response');
+		}
+
+		return new SseSessionEventStream($handle);
 	}
 
 	public function uploadFile(string $filename, string $contents, string $mediaType): array

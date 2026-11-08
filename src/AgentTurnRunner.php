@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ADT\AiChat;
 
 use ADT\AiChat\Client\ManagedAgentsClient;
+use ADT\AiChat\Client\SessionEventStream;
+use ADT\AiChat\Client\SessionEventStreamer;
 use ADT\AiChat\Entity\ConversationInterface;
 use ADT\AiChat\Exception\AiChatException;
 use ADT\AiChat\Exception\TurnTimeoutException;
@@ -13,8 +15,9 @@ use ADT\AiChat\Exception\TurnTimeoutException;
  * Runs one turn of a Managed Agents conversation.
  *
  * The conversation state lives on Anthropic's side (a session), so only the new
- * user message is sent and the reply is collected by polling the session events -
- * a worker cannot hold an SSE stream. Custom tool calls are executed locally
+ * user message is sent and the reply is collected from the session events - from
+ * the live event stream when the client offers one ({@see SessionEventStreamer}),
+ * otherwise (or when the stream fails) by polling the event list. Custom tool calls are executed locally
  * through the {@see ToolExecutor} and their results are sent back until the
  * session becomes idle.
  *
@@ -25,6 +28,12 @@ use ADT\AiChat\Exception\TurnTimeoutException;
 class AgentTurnRunner
 {
 	private const EVENTS_PAGE_SIZE = 100;
+
+	/**
+	 * With a stream that stays quiet this long the event list is read too - a proxy
+	 * buffering the stream or a missed event must not stall the turn until the idle timeout
+	 */
+	private const STREAM_RECONCILE_SECONDS = 5.0;
 
 	/** @var callable(): AgentResolution */
 	private $agentResolver;
@@ -151,6 +160,10 @@ class AgentTurnRunner
 	 */
 	private function runSessionTurn(string $sessionId, string $userMessage, array $attachments, string $history, ?TurnMonitor $monitor): TurnResult
 	{
+		// Stream first: it carries only events emitted after it opened, so it must be
+		// open before the message goes out.
+		$stream = $this->openStream($sessionId);
+
 		// Events present before sending are history and must be ignored.
 		$seen = $this->snapshotEventIds($sessionId);
 
@@ -167,16 +180,78 @@ class AgentTurnRunner
 			array_unshift($content, ['type' => 'text', 'text' => $history]);
 		}
 
-		$this->client->sendSessionEvents($sessionId, [[
-			'type' => 'user.message',
-			'content' => $content,
-		]]);
+		try {
+			$this->client->sendSessionEvents($sessionId, [[
+				'type' => 'user.message',
+				'content' => $content,
+			]]);
 
-		return $this->pollUntilIdle($sessionId, $seen, $monitor);
+			return $this->pollUntilIdle($sessionId, $seen, $monitor, $stream);
+		} finally {
+			$stream?->close();
+		}
+	}
+
+	/** The live event stream, when the client has one and it opens; null = poll */
+	private function openStream(string $sessionId): ?SessionEventStream
+	{
+		if (!$this->client instanceof SessionEventStreamer) {
+			return null;
+		}
+		try {
+			return $this->client->openSessionEventStream($sessionId);
+		} catch (\Throwable) {
+			return null;
+		}
 	}
 
 	/**
-	 * The agent loop over event polling: read new events, execute custom tools and
+	 * New events from the stream; a broken stream is dropped and the events come
+	 * from the event list from then on (nothing is lost - $seen knows what came).
+	 *
+	 * @param array<string, true> $seen updated with the returned events
+	 * @return list<array<string, mixed>>
+	 */
+	private function readStream(?SessionEventStream &$stream, string $sessionId, array &$seen, float &$lastListed): array
+	{
+		if ($stream === null) {
+			usleep($this->options->pollIntervalMicroseconds);
+
+			return $this->fetchNewEvents($sessionId, $seen);
+		}
+
+		try {
+			$events = $stream->read($this->options->pollIntervalMicroseconds / 1_000_000);
+		} catch (\Throwable) {
+			$stream->close();
+			$stream = null;
+
+			return $this->fetchNewEvents($sessionId, $seen);
+		}
+
+		$new = [];
+		foreach ($events as $event) {
+			$id = (string) ($event['id'] ?? '');
+			// A user message comes twice (queued, then processed); events without an id do not matter here
+			if ($id === '' || isset($seen[$id])) {
+				continue;
+			}
+			$seen[$id] = true;
+			$new[] = $event;
+		}
+
+		if ($new) {
+			$lastListed = microtime(true);
+		} elseif (microtime(true) - $lastListed >= self::STREAM_RECONCILE_SECONDS) {
+			$lastListed = microtime(true);
+			$new = $this->fetchNewEvents($sessionId, $seen);
+		}
+
+		return $new;
+	}
+
+	/**
+	 * The agent loop over the session events: read new events, execute custom tools and
 	 * send their results back, until the session reaches a terminal idle state.
 	 *
 	 * The turn has no fixed length - it lasts while the session keeps producing
@@ -191,8 +266,9 @@ class AgentTurnRunner
 	 * @param array<string, true> $seen ids of events present before the message was sent
 	 * @throws AiChatException
 	 */
-	private function pollUntilIdle(string $sessionId, array $seen, ?TurnMonitor $monitor): TurnResult
+	private function pollUntilIdle(string $sessionId, array $seen, ?TurnMonitor $monitor, ?SessionEventStream $stream = null): TurnResult
 	{
+		$lastListed = microtime(true);
 		$texts = [];
 		$toolData = [];
 		$tokensInput = 0;
@@ -209,14 +285,14 @@ class AgentTurnRunner
 		$interruptedAt = null;
 
 		while (true) {
-			usleep($this->options->pollIntervalMicroseconds);
+			// From the stream right away, or after a poll interval from the event list
+			$events = $this->readStream($stream, $sessionId, $seen, $lastListed);
 
 			if ($interruptedAt === null && $monitor?->isCancelled()) {
 				$this->interrupt($sessionId);
 				$interruptedAt = microtime(true);
 			}
 
-			$events = $this->fetchNewEvents($sessionId, $seen);
 			$toolResults = [];
 
 			foreach ($events as $event) {
