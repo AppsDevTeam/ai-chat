@@ -80,8 +80,10 @@ to the event list - no event is lost or handled twice, the runner remembers what
 slower). Pass a `Push\ChatPushPublisher` to `ChatService` (`pushPublisher:`, autowired in
 DI) and the worker announces every change of a conversation (progress of the turn, the
 reply, an error); the endpoint responses carry `push` ({url, topic, token}), the widget
-subscribes and polls right away on every update - the scheduled poll then runs only every
-2 s, as a fallback. Only the signal goes through the push, never the content.
+subscribes and polls right away on every update. With a connected push the widget does
+not poll on its own at all - a lost push (hub restart, dropped connection at the wrong
+moment) is fixed by reloading the page; when the push disconnects or is not offered, the
+widget polls as before. Only the signal goes through the push, never the content.
 
 `Push\MercurePushPublisher` works with a Mercure hub (standalone, or built into FrankenPHP
 and Caddy): a private topic per conversation (`topicPrefix` tells apart tenants sharing
@@ -572,6 +574,11 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.11.1
+
+With a connected push the widget no longer polls on its own (1.11.0 polled every 2 s as a
+fallback).
 
 ## Upgrading to 1.11
 

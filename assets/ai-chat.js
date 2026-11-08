@@ -67,7 +67,8 @@
  *
  * Push: with `push` in the responses ({url, topic, token} of a Mercure hub, the server's
  * ChatPushPublisher) the widget subscribes to its conversation (fetch stream) and polls
- * right away on every update; the scheduled poll then runs at most every 2 s, as a fallback.
+ * right away on every update - with a connected push it does not poll on its own at all.
+ * A lost push is fixed by reloading the page; without push (or when it drops) it polls.
  *
  * Events dispatched on the root element (bubbling):
  *   ai-chat:conversation  {conversation}  created, renamed, rated or a reply arrived
@@ -1038,11 +1039,14 @@ export class AiChat {
 			}
 
 			let data;
+			this.pollInFlight = true;
 			try {
 				data = await this.request('GET', this.urls.poll, { conversationId, afterId });
 			} catch {
 				// A transient failure (deploy, outage) - keep polling.
 				data = null;
+			} finally {
+				this.pollInFlight = false;
 			}
 
 			if (String(this.conversationId) !== String(conversationId)) {
@@ -1108,29 +1112,49 @@ export class AiChat {
 
 			this.subscribePush(data?.push);
 			// A push that came during this poll means more news - ask again right away
-			const delay = this.pushedDuringPoll ? 0 : this.pollDelay();
-			this.pushedDuringPoll = false;
-			this.pollTimer = setTimeout(poll, delay);
+			if (this.pushedDuringPoll) {
+				this.pushedDuringPoll = false;
+				this.pollTimer = setTimeout(poll, 0);
+				return;
+			}
+			this.schedulePoll();
 		};
 
+		// With a connected push the widget only waits for it - no scheduled poll. A lost push
+		// (hub down, dropped connection) is fixed by reloading the page; when the push
+		// disconnects, polling takes over again.
+		this.schedulePoll = () => {
+			if (this.pushConnected()) {
+				this.pollTimer = null;
+				this.pollWaiting = true;
+				return;
+			}
+			this.pollWaiting = false;
+			this.pollTimer = setTimeout(poll, this.pollDelay());
+		};
 		this.pollNow = () => {
-			if (this.pollTimer) {
-				clearTimeout(this.pollTimer);
-				this.pollTimer = setTimeout(poll, 0);
-			} else {
+			if (this.pollInFlight) {
 				this.pushedDuringPoll = true;
+				return;
+			}
+			clearTimeout(this.pollTimer);
+			this.pollWaiting = false;
+			this.pollTimer = setTimeout(poll, 0);
+		};
+		this.resumePolling = () => {
+			if (this.pollWaiting) {
+				this.schedulePoll();
 			}
 		};
-		this.pollTimer = setTimeout(poll, this.pollDelay());
+		this.schedulePoll();
 	}
 
 	// A simple reply takes seconds, one with queries up to minutes - `pollIntervalMs`
 	// for the first 15 s, then 2 s up to a minute, 5 s up to three, then 10 s.
 	pollDelay() {
 		const elapsed = Date.now() - this.pollStartedAt;
-		// With a working push the poll is only a fallback
 		if (elapsed < 15000) {
-			return this.pushConnected() ? Math.max(this.config.pollIntervalMs, 2000) : this.config.pollIntervalMs;
+			return this.config.pollIntervalMs;
 		}
 		if (elapsed < 60000) {
 			return 2000;
@@ -1143,6 +1167,9 @@ export class AiChat {
 		clearTimeout(this.pollTimer);
 		this.pollTimer = null;
 		this.pollNow = null;
+		this.resumePolling = null;
+		this.schedulePoll = null;
+		this.pollWaiting = false;
 		this.pushedDuringPoll = false;
 	}
 
@@ -1193,6 +1220,8 @@ export class AiChat {
 				});
 				// An expired or refused token - the next response of the server brings a new one
 				if (response.status === 401 || response.status === 403 || !response.ok || !response.body) {
+					this.pushOpen = false;
+					this.resumePolling?.();
 					break;
 				}
 				this.pushOpen = true;
@@ -1220,6 +1249,8 @@ export class AiChat {
 				// A dropped connection - try again below, an aborted one ends the loop
 			}
 			this.pushOpen = false;
+			// A reply on its way is polled again until the push is back
+			this.resumePolling?.();
 			if (signal.aborted) {
 				break;
 			}
