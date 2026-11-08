@@ -25,12 +25,17 @@ class ConversationTurnMonitor implements TurnMonitor
 
 	private ?string $lastProgress = null;
 
+	/** @var (callable(ConversationInterface): void)|null after a stored progress - a push to the widget */
+	private $onChange;
+
 	public function __construct(
 		private readonly EntityManagerInterface $em,
 		private readonly ConversationInterface $conversation,
 		private readonly float $cancelCheckSeconds = 1,
 		private readonly float $heartbeatSeconds = 5,
+		?callable $onChange = null,
 	) {
+		$this->onChange = $onChange;
 	}
 
 	public function isCancelled(): bool
@@ -64,10 +69,15 @@ class ConversationTurnMonitor implements TurnMonitor
 		}
 
 		$this->lastWrite = $now;
+		// A heartbeat (unchanged progress) is not pushed - nothing new to show
+		$previous = $this->lastProgress;
 		$this->lastProgress = $encoded;
 
 		$this->conversation->setTurnActivity(new \DateTimeImmutable());
 		$this->conversation->setTurnProgress($progress);
 		$this->em->flush();
+		if ($this->onChange !== null && $encoded !== $previous) {
+			($this->onChange)($this->conversation);
+		}
 	}
 }

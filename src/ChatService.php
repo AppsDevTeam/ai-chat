@@ -17,6 +17,7 @@ use ADT\AiChat\Tool\ExportTool;
 use ADT\AiChat\Tool\ExportToolProvider;
 use ADT\DoctrineAnonymization\ReadOnlyQueryExecutor;
 use Doctrine\ORM\EntityManagerInterface;
+use ADT\AiChat\Push\ChatPushPublisher;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -67,6 +68,7 @@ class ChatService
 		private readonly ?PiiCheckListener $piiCheckListener = null,
 		private readonly ?ModelRouter $modelRouter = null,
 		private readonly ?ConversationRouter $conversationRouter = null,
+		private readonly ?ChatPushPublisher $pushPublisher = null,
 	) {
 	}
 
@@ -695,6 +697,7 @@ class ChatService
 			$this->addMessage($conversation, $this->describeError($e), MessageInterface::AUTHOR_AI, error: true);
 			$conversation->setUpdated(new \DateTimeImmutable());
 			$this->em->flush();
+			$this->pushChange($conversation);
 		} catch (\Throwable $saveError) {
 			$this->logger?->error($saveError->getMessage(), ['exception' => $saveError]);
 		}
@@ -714,7 +717,7 @@ class ChatService
 	 */
 	public function runConversationTurn(ConversationInterface $conversation, string $userMessage, array $attachments = [], ?string $context = null): MessageInterface
 	{
-		$monitor = new ConversationTurnMonitor($this->em, $conversation);
+		$monitor = new ConversationTurnMonitor($this->em, $conversation, onChange: $this->pushChange(...));
 		$pseudonymized = null;
 		// A turn stopped before the worker picked it up goes nowhere - no check needed
 		if ($this->pseudonymizer !== null && !$monitor->isCancelled()) {
@@ -798,8 +801,30 @@ class ChatService
 
 		$conversation->setUpdated(new \DateTimeImmutable());
 		$this->em->flush();
+		$this->pushChange($conversation);
 
 		return $reply;
+	}
+
+	/**
+	 * What the widget needs to get pushes of the conversation ({@see ChatPushPublisher});
+	 * null = no push, the widget polls.
+	 *
+	 * @return array{url: string, topic: string, token: string}|null
+	 */
+	public function getPushSubscription(ConversationInterface $conversation): ?array
+	{
+		return $conversation->getId() !== null ? $this->pushPublisher?->subscription($conversation) : null;
+	}
+
+	/** Tells the widget the conversation changed - best effort, the widget polls anyway */
+	private function pushChange(ConversationInterface $conversation): void
+	{
+		try {
+			$this->pushPublisher?->conversationChanged($conversation);
+		} catch (\Throwable $e) {
+			$this->logger?->warning($e->getMessage(), ['exception' => $e]);
+		}
 	}
 
 	/**

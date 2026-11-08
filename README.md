@@ -76,6 +76,31 @@ a plain PHP stream, needs `allow_url_fopen`). A client without it, a stream that
 not open or breaks, or a quiet stream (a buffering proxy, checked every 5 s) falls back
 to the event list - no event is lost or handled twice, the runner remembers what it saw.
 
+**Push to the widget.** Without it the widget polls the reply (250 ms at first, then
+slower). Pass a `Push\ChatPushPublisher` to `ChatService` (`pushPublisher:`, autowired in
+DI) and the worker announces every change of a conversation (progress of the turn, the
+reply, an error); the endpoint responses carry `push` ({url, topic, token}), the widget
+subscribes and polls right away on every update - the scheduled poll then runs only every
+2 s, as a fallback. Only the signal goes through the push, never the content.
+
+`Push\MercurePushPublisher` works with a Mercure hub (standalone, or built into FrankenPHP
+and Caddy): a private topic per conversation (`topicPrefix` tells apart tenants sharing
+the hub), tokens as the current protocol wants them (RFC 9068 `at+jwt`, the
+`authorization_details` claim, `iss`/`aud` of the hub's `issuer` and
+`resource_identifier`; the older `mercure` claim is there too). The widget sends the
+token in the Authorization header (fetch stream - the hub refuses tokens in the URL), so
+put the hub on the same origin as the app (e.g. `/.well-known/mercure` proxied to it).
+
+```php
+new MercurePushPublisher(
+    publishUrl: 'http://hub:8080/.well-known/mercure', // as the worker reaches it
+    subscribeUrl: '/.well-known/mercure',              // as the browser reaches it
+    publisherKey: $publisherKey, subscriberKey: $subscriberKey,
+    topicPrefix: 'myapp/' . $tenant,
+    issuer: 'https://myapp.example', audience: 'https://myapp.example/.well-known/mercure',
+);
+```
+
 ### 2. The entities
 
 Conversation, message and agent mapping are your Doctrine entities; the traits
@@ -547,6 +572,12 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.11
+
+Nothing breaks. New: push to the widget - `Push\ChatPushPublisher` (optional last
+argument `pushPublisher` of `ChatService`), `Push\MercurePushPublisher`, `push` in the
+load/send/poll responses ([Push to the widget](#1-the-transport)).
 
 ## Upgrading to 1.10
 

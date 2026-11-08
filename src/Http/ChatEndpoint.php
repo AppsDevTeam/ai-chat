@@ -107,6 +107,8 @@ class ChatEndpoint
 				'readOnly' => $readOnly,
 				'canManage' => $canManage ?? !$readOnly,
 				'contextUsage' => $this->chat->getContextUsage($conversation),
+				// Push of changes (adt/ai-chat ChatPushPublisher) - the widget then polls right away
+				'push' => $this->chat->getPushSubscription($conversation),
 			];
 		});
 	}
@@ -163,6 +165,8 @@ class ChatEndpoint
 				'queued' => true,
 				'message' => $this->clientMessage($userMessage, $sender ?? $owner),
 				'lastMessageId' => $userMessage->getId(),
+				// Push of changes (adt/ai-chat ChatPushPublisher) - the widget then polls right away
+				'push' => $this->chat->getPushSubscription($conversation),
 				'conversation' => $this->clientConversation($conversation),
 			];
 		});
@@ -186,6 +190,8 @@ class ChatEndpoint
 				'messages' => array_map(fn(MessageInterface $m): array => $this->clientMessage($m, $viewer ?? $owner), $this->chat->getMessagesAfter($conversation, $afterId)),
 				'conversation' => $this->clientConversation($conversation),
 				'contextUsage' => $this->chat->getContextUsage($conversation),
+				// Push of changes (adt/ai-chat ChatPushPublisher) - the widget then polls right away
+				'push' => $this->chat->getPushSubscription($conversation),
 				'turn' => $this->clientTurn($this->chat->getTurnState($conversation)),
 			];
 		});

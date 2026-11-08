@@ -65,6 +65,10 @@
  * at runtime: the chat empties and reloads the conversation list, which also
  * tells whether the view is read-only.
  *
+ * Push: with `push` in the responses ({url, topic, token} of a Mercure hub, the server's
+ * ChatPushPublisher) the widget subscribes to its conversation (fetch stream) and polls
+ * right away on every update; the scheduled poll then runs at most every 2 s, as a fallback.
+ *
  * Events dispatched on the root element (bubbling):
  *   ai-chat:conversation  {conversation}  created, renamed, rated or a reply arrived
  *   ai-chat:deleted       {id}
@@ -265,6 +269,7 @@ export class AiChat {
 
 	destroy() {
 		this.stopPolling();
+		this.closePush();
 		this.destroyCharts();
 		window.removeEventListener('resize', this.onResize);
 		this.root.replaceChildren();
@@ -768,6 +773,7 @@ export class AiChat {
 	/** No conversation open, nothing pending. */
 	reset() {
 		this.stopPolling();
+		this.closePush();
 		this.setLoading(false);
 		this.conversationId = null;
 		this.conversation = null;
@@ -848,6 +854,7 @@ export class AiChat {
 
 		this.setTitle(data.conversation?.title);
 		this.updateContextUsage(data.contextUsage);
+		this.subscribePush(data.push);
 
 		messages.forEach((message) => this.appendMessage(message));
 		this.renderRating();
@@ -968,6 +975,7 @@ export class AiChat {
 			this.refreshConversationList();
 		}
 
+		this.subscribePush(data.push);
 		this.startPolling(data.lastMessageId);
 	}
 
@@ -1098,9 +1106,21 @@ export class AiChat {
 				return;
 			}
 
-			this.pollTimer = setTimeout(poll, this.pollDelay());
+			this.subscribePush(data?.push);
+			// A push that came during this poll means more news - ask again right away
+			const delay = this.pushedDuringPoll ? 0 : this.pollDelay();
+			this.pushedDuringPoll = false;
+			this.pollTimer = setTimeout(poll, delay);
 		};
 
+		this.pollNow = () => {
+			if (this.pollTimer) {
+				clearTimeout(this.pollTimer);
+				this.pollTimer = setTimeout(poll, 0);
+			} else {
+				this.pushedDuringPoll = true;
+			}
+		};
 		this.pollTimer = setTimeout(poll, this.pollDelay());
 	}
 
@@ -1108,8 +1128,9 @@ export class AiChat {
 	// for the first 15 s, then 2 s up to a minute, 5 s up to three, then 10 s.
 	pollDelay() {
 		const elapsed = Date.now() - this.pollStartedAt;
+		// With a working push the poll is only a fallback
 		if (elapsed < 15000) {
-			return this.config.pollIntervalMs;
+			return this.pushConnected() ? Math.max(this.config.pollIntervalMs, 2000) : this.config.pollIntervalMs;
 		}
 		if (elapsed < 60000) {
 			return 2000;
@@ -1121,6 +1142,105 @@ export class AiChat {
 	stopPolling() {
 		clearTimeout(this.pollTimer);
 		this.pollTimer = null;
+		this.pollNow = null;
+		this.pushedDuringPoll = false;
+	}
+
+	// -- Push (server-sent events) -------------------------------------------------
+
+	/**
+	 * Subscribes to the changes of the open conversation, when the server offers it
+	 * (`push` in the responses: a Mercure hub URL, the topic and a token for it). A push
+	 * only says "something changed" - the widget then polls right away, so the reply
+	 * shows without waiting for the next poll. Without push it just polls.
+	 *
+	 * fetch with a stream instead of EventSource: the hub accepts the token only in the
+	 * Authorization header (never in the URL, where it would end up in logs), and
+	 * EventSource cannot send headers.
+	 */
+	subscribePush(push) {
+		if (!push?.url || !push.topic || typeof TextDecoderStream === 'undefined') {
+			if (push === null) {
+				this.closePush();
+			}
+			return;
+		}
+		if (this.pushController && this.pushTopic === push.topic) {
+			// A fresh token for the next reconnect
+			this.pushToken = push.token;
+			return;
+		}
+
+		this.closePush();
+		this.pushTopic = push.topic;
+		this.pushToken = push.token;
+		this.pushController = new AbortController();
+		this.readPush(push.url, push.topic, this.pushController.signal);
+	}
+
+	/** Reads the stream; reconnects after a drop (1 s, doubling up to 30 s) until closed. */
+	async readPush(hubUrl, topic, signal) {
+		const url = new URL(hubUrl, window.location.href);
+		url.searchParams.append('match', topic);
+		let delay = 1000;
+
+		while (!signal.aborted) {
+			try {
+				const response = await fetch(url, {
+					headers: { Authorization: 'Bearer ' + this.pushToken, Accept: 'text/event-stream' },
+					cache: 'no-store',
+					signal,
+				});
+				// An expired or refused token - the next response of the server brings a new one
+				if (response.status === 401 || response.status === 403 || !response.ok || !response.body) {
+					break;
+				}
+				this.pushOpen = true;
+				delay = 1000;
+
+				const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+				let buffer = '';
+				for (;;) {
+					const { value, done } = await reader.read();
+					if (done) {
+						break;
+					}
+					buffer = (buffer + value).replace(/\r\n?/g, '\n');
+					let end;
+					while ((end = buffer.indexOf('\n\n')) >= 0) {
+						const block = buffer.slice(0, end);
+						buffer = buffer.slice(end + 2);
+						// A comment (keep-alive) carries no data
+						if (/^data:/m.test(block)) {
+							this.pollNow?.();
+						}
+					}
+				}
+			} catch {
+				// A dropped connection - try again below, an aborted one ends the loop
+			}
+			this.pushOpen = false;
+			if (signal.aborted) {
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, delay));
+			delay = Math.min(delay * 2, 30000);
+		}
+		this.pushOpen = false;
+		if (this.pushTopic === topic && !signal.aborted) {
+			this.pushController = null;
+		}
+	}
+
+	closePush() {
+		this.pushController?.abort();
+		this.pushController = null;
+		this.pushTopic = null;
+		this.pushOpen = false;
+	}
+
+	pushConnected() {
+		return this.pushOpen === true;
 	}
 
 	/**
