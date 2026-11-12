@@ -75,7 +75,7 @@ class ChatPresenter extends Presenter
 	{
 		$this->assertPost();
 
-		$files = $this->getHttpRequest()->getFile('attachments') ?? [];
+		$files = $this->getHttpRequest()->getFiles()['attachments'] ?? [];
 		$uploads = array_map(
 			AttachmentUpload::fromNetteFileUpload(...),
 			array_filter(is_array($files) ? $files : [$files], static fn($f): bool => $f instanceof FileUpload),
