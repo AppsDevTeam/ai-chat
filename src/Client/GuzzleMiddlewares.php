@@ -33,9 +33,9 @@ trait GuzzleMiddlewares
 	protected function createHandlerStack(): HandlerStack
 	{
 		$stack = HandlerStack::create();
-		// unshift = next to the transport; reversed, so that the first one added stays on top
-		foreach (array_reverse($this->middlewares) as [$middleware, $name]) {
-			$stack->unshift($middleware, $name);
+		// push = next to the transport (Guzzle's unshift would put it on top, above http_errors)
+		foreach ($this->middlewares as [$middleware, $name]) {
+			$stack->push($middleware, $name);
 		}
 
 		return $stack;
