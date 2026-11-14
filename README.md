@@ -469,6 +469,34 @@ a chat panel) calls `preventDefault()`. Clicks on links to your site in replies 
 on the button (`labels.open`, icon `open`) dispatch the same event with `auto:
 false`; unhandled, they open a new tab and an unhandled auto navigation does nothing.
 
+### Skills
+
+A **skill** is a guide for a task the model cannot do with one tool call: which tools to
+call in which order and what to tell the user ("find a free slot, offer it, let the user
+confirm, then book it"). The model gets only the list - name, title and *when to use* -
+from `list_skills` and loads the instructions with `get_skill` when it picks one, so a
+long list of skills does not cost tokens in every turn.
+
+Where the skills live and who may use them is up to the project - implement
+`Skill\SkillProvider` (`getSkills()` = what the current user may use, `getSkill($name)` =
+null when missing or not allowed, so a forbidden skill looks like a missing one) and add
+the two tools:
+
+```php
+$tools = new CompositeToolExecutor($toolHandler, [
+	new ListSkillsTool($skillProvider),        // optional 2nd argument replaces the description
+	new GetSkillTool($skillProvider),
+	...$projectTools,
+]);
+```
+
+`list_skills` returns `{skills: [{name, title, description}]}`, `get_skill`
+`{name, title, instructions}` or `{error}`. The description of `list_skills`
+(`ListSkillsTool::DEFAULT_DESCRIPTION`) tells the model to check the skills whenever the
+user wants something done or asks how to use the system; a project may append which of
+its own tools act by themselves and need no skill. New or changed skills need no agent
+update - the tools read the provider on every call.
+
 ### Page context
 
 The widget posts the page the user is on (`page`: path and query) with every message.
@@ -574,6 +602,13 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.12
+
+New `Skill\Skill`, `Skill\SkillProvider`, `Skill\ListSkillsTool` and
+`Skill\GetSkillTool` (see [Skills](#skills)); nothing changes for existing projects. A
+project with its own `list_skills` / `get_skill` tools can replace them with these and
+keep only a `SkillProvider`.
 
 ## Upgrading to 1.11.1
 
