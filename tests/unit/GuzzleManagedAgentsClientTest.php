@@ -138,4 +138,32 @@ class GuzzleManagedAgentsClientTest extends \Codeception\Test\Unit
 			}
 		}
 	}
+
+	/** Logging or metrics from outside (a DI decorator) without a subclass */
+	public function testAddedMiddlewareSeesEveryRequest(): void
+	{
+		$mock = new MockHandler([new Response(200, [], '{"id":"env_1"}')]);
+		$client = new class ($mock) extends GuzzleManagedAgentsClient {
+			public function __construct(private readonly MockHandler $transport)
+			{
+				parent::__construct('sk-test', 'claude-test', 'https://api.test/v1/');
+			}
+
+			protected function createHandlerStack(): HandlerStack
+			{
+				$stack = parent::createHandlerStack();
+				$stack->setHandler($this->transport);
+				return $stack;
+			}
+		};
+		$seen = [];
+		$client->addMiddleware(Middleware::mapRequest(function (\Psr\Http\Message\RequestInterface $request) use (&$seen) {
+			$seen[] = (string) $request->getUri();
+			return $request;
+		}), 'log');
+
+		$client->createEnvironment('env');
+
+		$this->assertSame(['https://api.test/v1/environments'], $seen);
+	}
 }

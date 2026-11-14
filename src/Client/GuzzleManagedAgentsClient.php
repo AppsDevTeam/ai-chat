@@ -18,8 +18,8 @@ use Psr\Http\Message\ResponseInterface;
  * surface as {@see ApiUnavailableException} with a short, user-safe detail (HTTP
  * status) - the Guzzle exception with the full response is the previous one.
  *
- * Extend it for request logging, metrics or retries: {@see request()} and
- * {@see createHttpClient()} are the hooks.
+ * Request logging, metrics or retries: {@see addMiddleware()} (Guzzle middleware, no subclass
+ * needed), or extend it - {@see request()} and {@see createHttpClient()} are the hooks.
  *
  * The event stream of a session ({@see openSessionEventStream()}) goes around Guzzle,
  * over a plain PHP stream: reading a line with a timeout (to let the worker check a
@@ -28,6 +28,8 @@ use Psr\Http\Message\ResponseInterface;
  */
 class GuzzleManagedAgentsClient implements ManagedAgentsClient, SessionEventStreamer
 {
+	use GuzzleMiddlewares;
+
 	public const MANAGED_AGENTS_BETA = 'managed-agents-2026-04-01';
 	public const FILES_API_BETA = 'files-api-2025-04-14';
 
@@ -227,6 +229,7 @@ class GuzzleManagedAgentsClient implements ManagedAgentsClient, SessionEventStre
 	protected function createHttpClient(): ClientInterface
 	{
 		return new Client([
+			'handler' => $this->createHandlerStack(),
 			'headers' => [
 				'anthropic-version' => $this->anthropicVersion,
 			],

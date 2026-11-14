@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ADT\AiChat\Pseudonymization;
 
+use ADT\AiChat\Client\GuzzleMiddlewares;
 use GuzzleHttp\Client;
 use Psr\Log\LoggerInterface;
 
@@ -24,6 +25,8 @@ use Psr\Log\LoggerInterface;
  */
 class OpenAiCompatiblePiiDetector implements PiiDetector
 {
+	use GuzzleMiddlewares;
+
 	public const DEFAULT_SYSTEM_PROMPT = <<<'TXT'
 		You check a text for personal data. Find every piece of data in the text that identifies
 		a specific person. Reply ONLY with a JSON object:
@@ -119,6 +122,7 @@ class OpenAiCompatiblePiiDetector implements PiiDetector
 	{
 		$options = [
 			'timeout' => $this->timeout,
+			'connect_timeout' => min(5, $this->timeout),
 			'headers' => ['X-Api-Key' => (string) $this->apiKey],
 			'json' => [
 				'model' => $this->model,
@@ -133,7 +137,7 @@ class OpenAiCompatiblePiiDetector implements PiiDetector
 		if ($this->authUser) {
 			$options['auth'] = [$this->authUser, (string) $this->authPassword];
 		}
-		$response = (new Client())->post(rtrim((string) $this->url, '/') . '/v1/chat/completions', $options);
+		$response = (new Client(['handler' => $this->createHandlerStack()]))->post(rtrim((string) $this->url, '/') . '/v1/chat/completions', $options);
 		$data = json_decode((string) $response->getBody(), true, 512, JSON_THROW_ON_ERROR);
 
 		return (string) ($data['choices'][0]['message']['content'] ?? '');

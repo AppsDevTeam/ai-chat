@@ -7,6 +7,7 @@ use ADT\AiChat\Http\FileDownload;
 use ADT\AiChat\Tool\CompositeToolExecutor;
 use ADT\AiChat\Tool\ExportTool;
 use ADT\AiChat\Tool\Tool;
+use ADT\AiChat\Tool\ToolProvider;
 use ADT\AiChat\ToolHandler;
 use ADT\AiChat\Tests\Support\StubQueryExecutor;
 
@@ -88,5 +89,24 @@ class CompositeToolExecutorTest extends \Codeception\Test\Unit
 		$this->assertInstanceOf(ExportTool::class, $executor->findExportTool('monthly_report'));
 		$this->assertNull($executor->findExportTool('ping'));
 		$this->assertNull($executor->findExportTool('export_csv'));
+	}
+
+	public function testToolsOfProvidersAreAskedOnFirstUse(): void
+	{
+		$provider = new class implements ToolProvider {
+			public int $calls = 0;
+
+			public function getTools(): iterable
+			{
+				$this->calls++;
+				yield CompositeToolExecutorTest::reportTool();
+			}
+		};
+		$executor = new CompositeToolExecutor(new ToolHandler(new StubQueryExecutor()), [], [$provider]);
+		$this->assertSame(0, $provider->calls);
+
+		$this->assertContains('monthly_report', array_column($executor->getCustomToolDefinitions(), 'name'));
+		$this->assertSame(42, $executor->handleToolCall('monthly_report', [])['total']);
+		$this->assertSame(1, $provider->calls);
 	}
 }

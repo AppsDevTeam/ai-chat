@@ -55,9 +55,11 @@ integration (grid of conversations, chat in the side panel).
 
 `Client\GuzzleManagedAgentsClient` (needs `guzzlehttp/guzzle`) sends the beta
 headers and turns failures into `ApiUnavailableException` with a user-safe detail.
-Extend it (`request()`, `send()`, `createHttpClient()`) for logging or retries, or
-implement `Client\ManagedAgentsClient` over your own HTTP client - it maps 1:1 to
-the REST endpoints.
+Logging, metrics or retries: `addMiddleware(callable $middleware, string $name)` adds
+a Guzzle middleware (before the first request, e.g. from a DI decorator - no subclass);
+`Pseudonymization\OpenAiCompatiblePiiDetector` has the same method. Or extend it
+(`request()`, `send()`, `createHttpClient()`), or implement `Client\ManagedAgentsClient`
+over your own HTTP client - it maps 1:1 to the REST endpoints.
 
 The API key is either a string, or a `Client\ApiKeyProvider` asked on every request
 - for a key per tenant (entered in the tenant's settings) that a long-running queue
@@ -441,6 +443,14 @@ $tools = new CompositeToolExecutor($toolHandler, [new MonthlyReportTool(...)]);
 // on the next session) and/or to the McpServer
 ```
 
+Tools that come into being at runtime (one per endpoint of your API, per report
+definition ...) come from a `Tool\ToolProvider` - the third argument of
+`CompositeToolExecutor`, asked on the first use:
+
+```php
+$tools = new CompositeToolExecutor($toolHandler, [new MonthlyReportTool(...)], [$apiEndpointTools]);
+```
+
 A tool that gives the user a **file** implements `Tool\ExportTool`: `handle()` returns
 `{type: export, token, filename, title?}` (plus what the model should see) and the
 widget renders a download button from it. The file is made only when the user clicks:
@@ -602,6 +612,13 @@ $default): string)`. Without it the English defaults are used. Keys:
 
 The widget texts are passed in its `labels` config (incl. `sentContent`, the
 summary of the "what the AI received" block).
+
+## Upgrading to 1.13
+
+New `Tool\ToolProvider` (third argument of `CompositeToolExecutor`) and
+`addMiddleware()` of `GuzzleManagedAgentsClient` and `OpenAiCompatiblePiiDetector`;
+the PII detector now has a connect timeout (`min(5, timeout)`). Nothing changes for
+existing projects - a subclass only for logging can become a middleware.
 
 ## Upgrading to 1.12
 
