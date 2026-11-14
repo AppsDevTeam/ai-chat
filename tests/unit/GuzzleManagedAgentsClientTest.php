@@ -166,4 +166,35 @@ class GuzzleManagedAgentsClientTest extends \Codeception\Test\Unit
 
 		$this->assertSame(['https://api.test/v1/environments'], $seen);
 	}
+
+	/** Next to the transport: an error status is seen as a response, not as an exception */
+	public function testMiddlewareSeesErrorResponsesBeforeHttpErrors(): void
+	{
+		$mock = new MockHandler([new Response(429, [], '{"error":{"message":"slow down"}}')]);
+		$client = new class ($mock) extends GuzzleManagedAgentsClient {
+			public function __construct(private readonly MockHandler $transport)
+			{
+				parent::__construct('sk-test', 'claude-test', 'https://api.test/v1/');
+			}
+
+			protected function createHandlerStack(): HandlerStack
+			{
+				$stack = parent::createHandlerStack();
+				$stack->setHandler($this->transport);
+				return $stack;
+			}
+		};
+		$statuses = [];
+		$client->addMiddleware(Middleware::mapResponse(function (\Psr\Http\Message\ResponseInterface $response) use (&$statuses) {
+			$statuses[] = $response->getStatusCode();
+			return $response;
+		}));
+
+		try {
+			$client->createEnvironment('env');
+		} catch (ApiUnavailableException) {
+		}
+
+		$this->assertSame([429], $statuses);
+	}
 }

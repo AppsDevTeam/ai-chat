@@ -15,7 +15,9 @@ use GuzzleHttp\HandlerStack;
  *           setup:
  *               - addMiddleware(@App\ApiLogger::middleware('anthropic'), apiLog)
  *
- * Add them before the first request - the HTTP client is created once.
+ * Add them before the first request - the HTTP client is created once. They sit next to the
+ * transport (below http_errors and allow_redirects): a logger sees every response with its
+ * status and body before an error status becomes an exception, and every redirect step.
  */
 trait GuzzleMiddlewares
 {
@@ -31,8 +33,9 @@ trait GuzzleMiddlewares
 	protected function createHandlerStack(): HandlerStack
 	{
 		$stack = HandlerStack::create();
-		foreach ($this->middlewares as [$middleware, $name]) {
-			$stack->push($middleware, $name);
+		// unshift = next to the transport; reversed, so that the first one added stays on top
+		foreach (array_reverse($this->middlewares) as [$middleware, $name]) {
+			$stack->unshift($middleware, $name);
 		}
 
 		return $stack;
